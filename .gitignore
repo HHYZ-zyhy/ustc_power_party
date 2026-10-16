@@ -23,3 +23,31 @@ mono_crash.*.json
 *.exe
 # Uncomment if your project does not version PCK files as runtime dependencies.
 # *.pck
+
+# ===== 建议添加的 =====
+
+# 操作系统文件（Windows/Mac/Linux）
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器/IDE（如果你用 VSCode 或 Rider 写 C#）
+.vscode/
+.idea/
+*.sln
+*.csproj
+*.user
+
+# 构建和导出目录（防止误提交导出文件）
+build/
+builds/
+export/
+exports/
+
+# 日志文件
+*.log
+
+# 临时文件
+*.bak
+*.backup
+*.old
