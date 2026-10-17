@@ -256,6 +256,57 @@ func _t_ko_effects_stop() -> void:
 	b4.round_close()
 	_check(b4.players[0].yc_uses == 2, "KO 后回合结束被动不触发", str(b4.players[0].yc_uses))
 
+func _t_ko_commit_stop() -> void:
+	# 用户裁决 2026-10-16（续）：commit 阶段瞬伤致死同样令所有效果停止
+	# ① 守方被 commit 瞬伤击倒后，settle 的荆棘不结算（攻方不扣血、层数保留）
+	var b := _mk("nuclear", "physics")
+	b.players[0].hp = 20
+	b.players[0].thorns = 2
+	b.players[1].hp = 3
+	b.players[0].dice[3].value = 6
+	b.players[0].dice[4].value = 6
+	b.players[0].dice[0].value = 4
+	b.players[0].dice[1].value = 2
+	b.commit_selection(0, "attack", [b.players[0].dice[0], b.players[0].dice[1], b.players[0].dice[3], b.players[0].dice[4]])
+	_check(b.winner == 0, "commit 瞬伤击倒守方", str(b.winner))
+	b.settle()
+	_check(b.players[0].hp == 20, "KO 后荆棘不扣血", str(b.players[0].hp))
+	_check(b.players[0].thorns == 2, "KO 后荆棘层数保留", str(b.players[0].thorns))
+	_check(b.players[1].hp == 0, "守方保持被击倒", str(b.players[1].hp))
+
+	# ② 被击倒方 commit：其瞬伤（核科学对子）不再打到已获胜方
+	var b2 := _mk("nuclear", "nuclear")
+	b2.players[1].hp = 3
+	b2.players[0].dice[3].value = 6
+	b2.players[0].dice[4].value = 6
+	b2.players[0].dice[0].value = 4
+	b2.players[0].dice[1].value = 2
+	b2.commit_selection(0, "attack", [b2.players[0].dice[0], b2.players[0].dice[1], b2.players[0].dice[3], b2.players[0].dice[4]])
+	_check(b2.winner == 0 and b2.players[1].hp == 0, "攻方 commit 瞬伤击倒守方", "%s/%s" % [b2.winner, b2.players[1].hp])
+	b2.players[1].dice[3].value = 6
+	b2.players[1].dice[4].value = 6
+	b2.players[1].dice[0].value = 4
+	b2.commit_selection(1, "defense", [b2.players[1].dice[0], b2.players[1].dice[3], b2.players[1].dice[4]])
+	_check(b2.players[0].hp == 25, "被击倒方的瞬伤不结算", str(b2.players[0].hp))
+	_check(b2.winner == 0, "胜负不被改写", str(b2.winner))
+
+	# ③ 被击倒方曜彩：不可用、有中文原因、投掷不消耗次数不入池
+	var b3 := _mk("nuclear", "nuclear")
+	b3.players[1].yc_name = "军训急救"
+	b3.players[1].yc_uses = 2
+	b3.players[1].hp = 3
+	b3.players[0].dice[3].value = 6
+	b3.players[0].dice[4].value = 6
+	b3.players[0].dice[0].value = 4
+	b3.players[0].dice[1].value = 2
+	b3.commit_selection(0, "attack", [b3.players[0].dice[0], b3.players[0].dice[1], b3.players[0].dice[3], b3.players[0].dice[4]])
+	_check(b3.winner == 0, "守方被 commit 瞬伤击倒", str(b3.winner))
+	_check(b3.yaocai_usable(1, "defense") == false, "被击倒方曜彩不可用", "")
+	_check(b3.yaocai_reason(1, "defense") != "", "被击倒方曜彩有中文原因", b3.yaocai_reason(1, "defense"))
+	b3.roll_yaocai(1, "defense")
+	_check(b3.players[1].yc_uses == 2, "KO 后投曜彩不消耗次数", str(b3.players[1].yc_uses))
+	_check(b3.players[1].dice.size() == 5, "KO 后曜彩骰不入池", str(b3.players[1].dice.size()))
+
 func _t_instant() -> void:
 	var b := _mk("nuclear", "ai")
 	b.players[0].dice[3].value = 6
@@ -579,6 +630,7 @@ func _init() -> void:
 	_t_leap()
 	_t_leap_hack_order()
 	_t_ko_effects_stop()
+	_t_ko_commit_stop()
 	_t_instant()
 	_t_leech()
 	_t_heal()

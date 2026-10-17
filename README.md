@@ -87,8 +87,8 @@ game/
   tests/
     sim.gd             792 局 AI vs AI 回归监控模拟（12 角色有序两两 ×6 局，每角色 132 局；随机曜彩；
                        数值对齐官方版，仅监控不调参）
-    keywords.gd        关键词级断言测试：无 RNG 摆定骰面直接断言结算数值，26 组场景 1110 项断言；
-                       **改核心结算逻辑必跑**，期望 KEYWORDS pass=1110 fail=0
+    keywords.gd        关键词级断言测试：无 RNG 摆定骰面直接断言结算数值，27 组场景 1122 项断言；
+                       **改核心结算逻辑必跑**，期望 KEYWORDS pass=1122 fail=0
     ui_play.gd         无头假人全流程（含重投、曜彩使用路径），期望 UI PLAY DONE（约 1 分钟）
     ui_smoke.gd        场景实例化冒烟（30 帧），期望 UI SMOKE OK
     shot.gd            布局截图自检（开窗运行，输出 _frames/shot_*.png 五张：选卡/战斗/曜彩弹窗/图鉴/战绩页）

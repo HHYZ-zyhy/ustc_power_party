@@ -58,7 +58,7 @@ Godot_v4.7.2-stable_win64.exe --path . -s res://tests/shot.gd
 | 命令 | 期望 stdout | 实测耗时 | 失败时长什么样 |
 |---|---|---|---|
 | `--import` | 一堆导入日志，无 ERROR | 数十秒（首次）/ 数秒（增量） | 脚本语法错会在此暴露 |
-| `keywords.gd` | `KEYWORDS pass=1110 fail=0` | <1s | 每条失败打印 `FAIL  <断言名>  <实际值>`；退出码 1 |
+| `keywords.gd` | `KEYWORDS pass=1122 fail=0` | <1s | 每条失败打印 `FAIL  <断言名>  <实际值>`；退出码 1 |
 | `sim.gd` | `=== balance sim ===` + 12 行 `win N/132 = XX.X%  avg_rounds N.N` | 约 1-2s | stderr 出现 `Out of bounds get index` = AI 选骰越界（等级超池类问题） |
 | `ui_play.gd` | `UI PLAY DONE winner=N round=N` | 约 1 分钟（逐帧驱动，别以为卡死） | `UI PLAY TIMEOUT round=N` = 假人 60000 帧内没打完（多半是人类阶段软锁） |
 | `ui_smoke.gd` | `UI SMOKE OK` | <1s | 场景实例化/`_ready` 报错会直接中断，无 OK |
