@@ -175,6 +175,8 @@ func apply_fx(fx: Dictionary, holder: Dictionary, holder_idx: int, opp: Dictiona
 		"mingding": pass
 
 func yaocai_usable(idx: int, phase: String) -> bool:
+	if winner >= 0:
+		return false   # 一方 KO 后所有效果不再结算（用户裁决 2026-10-16）
 	var p: Dictionary = players[idx]
 	if p.yc_name == "" or p.yc_uses <= 0 or p.yc_rolled:
 		return false
@@ -189,6 +191,8 @@ func yaocai_usable(idx: int, phase: String) -> bool:
 
 # 不可用原因（中文，供界面提示）；返回 "" 表示当前可用，判定与 yaocai_usable 一致
 func yaocai_reason(idx: int, phase: String) -> String:
+	if winner >= 0:
+		return "对局已结束"
 	var p: Dictionary = players[idx]
 	if p.yc_name == "":
 		return "无曜彩骰"
@@ -223,6 +227,8 @@ func yaocai_reason(idx: int, phase: String) -> String:
 	return "当前不可用"
 
 func roll_yaocai(idx: int, phase: String) -> void:
+	if winner >= 0:
+		return   # 一方 KO 后不投曜彩、不消耗次数（用户裁决 2026-10-16）
 	var p: Dictionary = players[idx]
 	var d := Die.new()
 	d.yaocai = p.yc_name
@@ -304,25 +310,29 @@ func commit_selection(idx: int, phase: String, sel_in: Array) -> void:
 			if face_fx.size() > 0:
 				p.yc_triggered += 1
 	var ctx := {"flags": {}, "sel": sel, "values": values, "atk_value": 0, "bonus": 0, "face_points": 0}
-	for d in sel:
-		if d.is_yaocai():
-			ctx.face_points = d.value
-			for fx in GameData.YAOCAI[d.yaocai].faces[d.face].fx:
-				apply_fx(fx, p, idx, opp, ctx)
-	for pas in p.cfg.passives:
-		if pas.t == phase and eval_cond(pas.c, p, sel, ctx):
-			for fx in pas.fx:
-				apply_fx(fx, p, idx, opp, ctx)
+	# 一方 KO 后所有效果不再结算（用户裁决 2026-10-16）：commit 阶段的曜彩面效果
+	# 与攻防被动（含瞬伤）全部跳过——被击倒方的瞬伤不再打到已获胜方
+	if winner < 0:
+		for d in sel:
+			if d.is_yaocai():
+				ctx.face_points = d.value
+				for fx in GameData.YAOCAI[d.yaocai].faces[d.face].fx:
+					apply_fx(fx, p, idx, opp, ctx)
+		for pas in p.cfg.passives:
+			if pas.t == phase and eval_cond(pas.c, p, sel, ctx):
+				for fx in pas.fx:
+					apply_fx(fx, p, idx, opp, ctx)
 	if phase == "attack":
 		var sum := 0
 		for d in sel:
 			sum += d.value
 		atk_value = sum + strength_total(p) + ctx.get("bonus", 0)
 		ctx.atk_value = atk_value
-		for pas in p.cfg.passives:
-			if (pas.t == "attack_after" or (pas.t == "attack" and pas.c.t == "sum_ge")) and eval_cond(pas.c, p, sel, ctx):
-				for fx in pas.fx:
-					apply_fx(fx, p, idx, opp, ctx)
+		if winner < 0:
+			for pas in p.cfg.passives:
+				if (pas.t == "attack_after" or (pas.t == "attack" and pas.c.t == "sum_ge")) and eval_cond(pas.c, p, sel, ctx):
+					for fx in pas.fx:
+						apply_fx(fx, p, idx, opp, ctx)
 		_ctx_a = ctx
 	else:
 		var sum := 0
@@ -406,7 +416,9 @@ func settle() -> Dictionary:
 	summary.pierce = _ctx_a.flags.get("pierce", false)
 	for i in range(players.size()):
 		var p: Dictionary = players[i]
-		if p.thorns > 0:
+		# 一方 KO 后所有效果不再结算（用户裁决 2026-10-16）：荆棘与连击/反击/中毒口径一致
+		# （commit 阶段瞬伤致死时 winner 已定，荆棘不扣血、层数保留）
+		if winner < 0 and p.thorns > 0:
 			var t: int = p.thorns
 			p.thorns = 0
 			damage(p, t, i)

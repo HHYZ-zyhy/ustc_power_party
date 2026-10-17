@@ -9,7 +9,7 @@
 - 用户自研骰子对战游戏 **科大战力党**（Godot 4.7，GDScript），借鉴《崩坏：星穹铁道》「上骰了！战力党！」玩法，角色为科大院系。
 - 1v1 攻防：双方按攻击/防御等级选骰，点数和比大小扣血，关键词（连击/洞穿/反击/骇入/力场/荆棘/中毒/韧性/力量/不屈/跃升/瞬伤/虹吸/治愈/升级/命定）与角色被动、曜彩骰面效果叠加。
 - v1 范围：单机 PVE（贪心 AI）、12 角色、11 曜彩骰、2D 界面 + 仅投骰过程 3D。中期局域网 PVP、后期天气模块。
-- **当前状态（2026-10-16）**：v1 已可完整游玩（选卡 → 战斗 → 终局战绩页），验证链全绿（keywords `pass=1110 fail=0`）；下一步以界面打磨与 AI 强度改进为主，详见 `DESIGN.md` §11 待办分级清单。
+- **当前状态（2026-10-16）**：v1 已可完整游玩（选卡 → 战斗 → 终局战绩页），验证链全绿（keywords `pass=1122 fail=0`）；下一步以界面打磨与 AI 强度改进为主，详见 `DESIGN.md` §11 待办分级清单。
 
 ## 2. 协作约定（必须遵守）
 
@@ -102,7 +102,7 @@ game/
   tests/
     sim.gd                 792 局 AI vs AI 回归监控模拟（随机曜彩）
     keywords.gd            关键词级断言测试：无 RNG 摆定骰面直接断言结算数值
-                           （26 组场景 1110 断言，改核心结算必跑，应 pass=1110 fail=0）
+                           （27 组场景 1122 断言，改核心结算必跑，应 pass=1122 fail=0）
     ui_play.gd             无头假人：走人类 UI 全路径（含重投、曜彩使用）
     ui_smoke.gd            场景实例化冒烟
     shot.gd                布局截图自检（开窗跑，输出 _frames/shot_*.png 五张：选卡/战斗/曜彩弹窗/图鉴/战绩页）
@@ -159,7 +159,7 @@ game/
 | `counter_round` | 本回合反击生效标志，settle 末尾按 `def_value > atk_value` 判定差值回打 |
 | `strength` | 力量层数组 `[{n, expire}]`：`expire = round+1` 为下回合到期（理实积淀），`-1` 为永久（地空）；`round_close` 清理 |
 | `toughness` | 韧性层数，计入防御值；**当前无授予通道**（见 DESIGN §5.2） |
-| `thorns` | 荆棘层数，结算开始扣自身血后清零（通宵鏖战加给自身） |
+| `thorns` | 荆棘层数，结算开始扣自身血后清零（通宵鏖战加给自身）；一方 KO 后不再结算、层数保留 |
 | `poison` | 中毒层数，结算后扣血并 -1（一方 KO 后不再结算）；**当前无授予通道** |
 | `field` `unyielding_round` `unyielding_used` | 力场（挡常规伤害、洞穿可破）、本回合不屈、不屈是否已用（生命学院仅 1 次）；前两者 `round_close` 清除 |
 | `leap_perm` `leap_round` | 永久跃升（管理/工程）→ `round_open` 复制到 `leap_round`，`settle` 前对攻守各触发一次 |
@@ -174,7 +174,7 @@ game/
 ```bash
 cd "D:/warrior party/game"
 Godot_v4.7.2-stable_win64.exe --headless --path . --import          # 新增 class_name 后必跑（数十秒，无关键输出）
-Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/keywords.gd  # 期望 KEYWORDS pass=1110 fail=0（<1s）
+Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/keywords.gd  # 期望 KEYWORDS pass=1122 fail=0（<1s）
 Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/sim.gd       # 期望 12 行胜率表、stderr 无 Out of bounds（约 1-2s）
 Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/ui_play.gd   # 期望 UI PLAY DONE winner=N round=N（约 1 分钟，逐帧驱动）
 Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/ui_smoke.gd  # 期望 UI SMOKE OK（<1s）
@@ -191,7 +191,7 @@ Godot_v4.7.2-stable_win64.exe --path "D:\warrior party\game"        # 开窗游�
 
 已完成总览（逐条细节见 DESIGN.md §10 决策日志 / §11 进度）：
 - 核心与数据：battle.gd 分步 API 与结算时序（含等级上限=普通骰数、on_damaged 仅防御正式结算逐次且被击倒后不触发）、12 角色/11 曜彩（intro 与 KEYWORDS 照录 Excel/DESIGN）、贪心 AI、Crypto 随机
-- 测试：keywords.gd（**26 组场景 1110 断言**，改核心结算必跑，实跑 `pass=1110 fail=0`）/ sim.gd（792 局回归监控，每角色 132 局）/ ui_play.gd / ui_smoke.gd / shot.gd（五张截图自检，输出目录随工程位置推导）
+- 测试：keywords.gd（**27 组场景 1122 断言**，改核心结算必跑，实跑 `pass=1122 fail=0`）/ sim.gd（792 局回归监控，每角色 132 局）/ ui_play.gd / ui_smoke.gd / shot.gd（五张截图自检，输出目录随工程位置推导）
 - UI：十一轮反馈全部落实；战斗布局定稿；曜彩六面表弹窗；骰型配色（4 天蓝/6 紫/8 橙/12 与曜彩近黑+蓝紫）；关键词图鉴（无入口按钮，界面内效果词点击展开）；终局战绩汇总页（HP 曲线/伤害/触发统计）；投骰 3D 演出（普通骰与曜彩骰均有）
 - 修复与裁决：2026-10-13 等级超池潜伏 bug + 全量审计五处缺陷；2026-10-15 审计复核四处修复；用户三条裁决（等级上限=普通骰数；受伤被动仅防御正式结算逐次；被击倒后不触发受伤被动），均有 keywords 回归覆盖
 - 文档：五份文档体系（AGENTS/CONTEXT/DESIGN/README/GODOT_GUIDE）持续同步，2026-10-16 完成一次面向交接的全面校订（修正场景数、清理失效引用、新增代码索引与字段词典）
@@ -205,6 +205,7 @@ Godot_v4.7.2-stable_win64.exe --path "D:\warrior party\game"        # 开窗游�
 - 2026-10-16：文档校订（本轮，代码零改动）；验证链全绿，sim 复跑离群值与 10-15 同量级；同日用户确认 Excel H 列已更新（xlsx ↔ gamedata `yc_reco` 核对 12 行一致），并明确 git 提交由其全权负责
 - 2026-10-16（续）：用户裁决跃升与骇入同时结算时**先跃升后骇入**（10-15 记录的规则空白关闭）；keywords 新增「跃升骇入顺序」场景，断言 1094 → 1098（24 → 25 组场景），验证链全绿
 - 2026-10-16（续二）：用户裁决**一方 KO 后所有效果均不再结算**——补齐 settle() 中虹吸（主伤害/连击两处）、中毒（含层数递减）与 round_close() 中回合结束被动的 `winner<0` 守卫；同日修复 shot.gd 五截图版重写时输出路径写死旧副本的回归（改为由工程位置推导并自动建目录）；keywords 新增「KO 后效果停止」场景，断言 1098 → 1110（25 → 26 组），验证链全绿
+- 2026-10-16（续三）：审计复核补齐上述裁决两处覆盖缺口——settle() 荆棘循环与 commit_selection() 阶段（曜彩面效果/攻防被动/attack_after）补 `winner<0` 守卫，`yaocai_usable/yaocai_reason/roll_yaocai` 三处加 winner 判定（被击倒方不再投曜彩消耗次数，界面原因「对局已结束」）；keywords 新增「KO 后 commit 阶段效果停止」场景，断言 1110 → 1122（26 → 27 组），验证链全绿
 
 待办（分级清单与验收口径见 DESIGN.md §11）：等用户开窗 playtest 反馈；P1 界面打磨（瞬伤/荆棘/中毒扣血飘字等）；P2 AI 强度改进（暂缓另议，**开工前须提醒用户**）；P3 局域网 PVP（中期）/ 天气模块（后期）/ 音效暂不加；P4 数据与仓库杂项（scratch 可清理）。平衡不做调整（政策冻结）。
 
@@ -240,7 +241,7 @@ Godot_v4.7.2-stable_win64.exe --path "D:\warrior party\game"        # 开窗游�
 1. 把整个 `D:\warrior party\` 文件夹原样拷贝到新设备，或 git clone 本仓库（分支 main）。注意：git 只含已跟踪文件（参考录屏 mp4 从未入库、现已不在磁盘）；`game/.godot/` 可不带（首次 import 自动重建）；`_frames/`、`_xlsx/` 为可清理 scratch（但 `_xlsx/original-backup.xlsx` 建议保留）。
 2. 新设备装 Godot 4.7.2 并加入 PATH（保持 exe 全名 `Godot_v4.7.2-stable_win64.exe`，见 GODOT_GUIDE.md §1）；装 Python 3.x（仅解析/改 xlsx 时需要）；ffmpeg（仅重新抽帧时需要）。
 3. 打开项目后按顺序读：`AGENTS.md`（硬规则 + 常见任务菜谱）→ 本文件（§5.1 代码索引、§5.2 字段词典、§8 坑）→ `DESIGN.md`（规则与决策日志，尤其 §5.1 合法取值、§9 已定约定、§11 待办）→ 需要细节时 `README.md`（文件清单）/ `GODOT_GUIDE.md`（引擎操作）。
-4. 跑一遍 §6 验证链确认环境可用：`--import` → `keywords.gd`（应 `pass=1110 fail=0`）→ `sim.gd`（792 局，每角色 132 局胜率表）→ `ui_play.gd`（应 `UI PLAY DONE`，约 1 分钟）→ `ui_smoke.gd`（应 `UI SMOKE OK`）；改布局再跑 shot.gd 并 Read 五张截图。
+4. 跑一遍 §6 验证链确认环境可用：`--import` → `keywords.gd`（应 `pass=1122 fail=0`）→ `sim.gd`（792 局，每角色 132 局胜率表）→ `ui_play.gd`（应 `UI PLAY DONE`，约 1 分钟）→ `ui_smoke.gd`（应 `UI SMOKE OK`）；改布局再跑 shot.gd 并 Read 五张截图。
 5. 继续工作的规矩：数值/规则改动必须先列方案给用户批准并同步 xlsx 与文档；每次用户反馈逐条落实后写入 DESIGN.md §10/§11；改完代码必须无头验证（keywords + sim + ui_play [+ ui_smoke]，改布局加 shot.gd）再汇报，视觉最终由用户开窗确认；不擅自 git commit。
 6. 本仓库已纳入 git（分支 main，`.gitignore` 忽略 `.godot/`、`*.exe` 等）：交接可 git clone / 整仓拷贝。git 提交与仓库状态由用户全权负责，AI 不执行、不跟踪。若使用带持久记忆的 AI 工具，其项目记忆应与本文件保持一致；冲突时以仓库内文档为准。
 7. shell 注意：部分环境（如 ZCode 本机会话）Bash 工具实为 cmd.exe，Unix 管道（`| tail` 等）不可用，Godot 命令整条直跑即可；控制台中文可能乱码，需要时让脚本写 UTF-8 文件再 Read。

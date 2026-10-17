@@ -17,7 +17,7 @@
 ## 接手清单（新智能体 5 分钟上手）
 
 1. 按阅读顺序读完四份文档（本文件 + CONTEXT + DESIGN 必读）。
-2. 跑验证链确认环境：`--import` → `keywords.gd`（应 `KEYWORDS pass=1110 fail=0`）→ `sim.gd`（12 行胜率表）→ `ui_play.gd`（应 `UI PLAY DONE`，约 1 分钟）→ `ui_smoke.gd`（应 `UI SMOKE OK`）。命令与期望输出见下。
+2. 跑验证链确认环境：`--import` → `keywords.gd`（应 `KEYWORDS pass=1122 fail=0`）→ `sim.gd`（12 行胜率表）→ `ui_play.gd`（应 `UI PLAY DONE`，约 1 分钟）→ `ui_smoke.gd`（应 `UI SMOKE OK`）。命令与期望输出见下。
 3. 记住硬规则（尤其：数值归用户、随机走 Crypto、不用 autoload、改完必验证、不擅自 commit）。
 4. 有疑问先查 DESIGN §9 已定约定 / §10 决策日志——十一轮 UI 反馈与全部裁决都有记录；查不到再问用户，**不要自己定规则**。
 5. 动手前先看两张表：DESIGN §5.1（数据驱动被动只能用哪些字符串，`match` 未命中会静默失败）与 CONTEXT §5.1（要改某功能去哪个函数）；改核心逻辑再查 CONTEXT §5.2（玩家状态字段词典）。
@@ -44,7 +44,7 @@
 ```bash
 cd "D:/warrior party/game"
 Godot_v4.7.2-stable_win64.exe --headless --path . --import        # 新增 class_name 后必跑（数十秒）
-Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/keywords.gd # 期望 KEYWORDS pass=1110 fail=0（<1s；改核心结算必跑）
+Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/keywords.gd # 期望 KEYWORDS pass=1122 fail=0（<1s；改核心结算必跑）
 Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/sim.gd      # 期望 12 行胜率表、stderr 无 Out of bounds（约 1-2s）
 Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/ui_play.gd  # 期望 UI PLAY DONE winner=N round=N（约 1 分钟）
 Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/ui_smoke.gd # 期望 UI SMOKE OK（<1s）
@@ -71,12 +71,12 @@ Godot_v4.7.2-stable_win64.exe --path "D:\warrior party\game"      # 开窗游玩
 - 纯逻辑层 `game/scripts/core/`：die / gamedata(数据+intro) / game_rng(Crypto) / battle(分步回合 API+结算时序) / ai(贪心) / driver(同步编排) / game_state(静态跨场景)。
 - UI 层 `game/scripts/ui/`：select_ui / battle_ui(人类=玩家0 异步编排；战绩汇总页) / dice_roll(3D 投骰演出) / glossary(关键词图鉴弹窗)。
 - 回合编排：`round_open()` → 每方 `roll_phase(idx)` → 可选 `roll_yaocai` → 攻方 `do_reroll(idx, dice数组)`×2（可选任意颗至全部）→ `commit_selection`（确认即锁定）→ `settle()` → `round_close()`（末尾**无条件** `round += 1`）。
-- 结算时序：跃升/骇入先改点（先跃升后骇入：骇入会把跃升刚升上来的骰打掉，用户裁决 2026-10-16）→ 重算攻防值 → 瞬伤已即时 → 结算开始荆棘 → 主伤害/连击/洞穿/反击 → 结算后中毒；**一方 KO 后所有效果均不再结算**（连击/反击/受伤被动/虹吸/中毒/回合结束被动均有 `winner < 0` 守卫，用户裁决 2026-10-16）；HP 钳制 ≥0，无平局。
+- 结算时序：跃升/骇入先改点（先跃升后骇入：骇入会把跃升刚升上来的骰打掉，用户裁决 2026-10-16）→ 重算攻防值 → 瞬伤已即时 → 结算开始荆棘 → 主伤害/连击/洞穿/反击 → 结算后中毒；**一方 KO 后所有效果均不再结算**（连击/反击/受伤被动/虹吸/中毒/回合结束被动/荆棘/commit 阶段被动与曜彩面效果/曜彩投掷均有 `winner < 0` 守卫，用户裁决 2026-10-16）；HP 钳制 ≥0，无平局。
 - 布局（1080p 基准，canvas_items 拉伸）：敌条顶部（含状态栏）/ 敌骰行 / 横幅+预期效果上 / 投骰演出居中透明 / 骰子候选中下（含逐骰效果标注）/ 玩家条底部（含状态栏）/ 操作按钮右列 / 曜彩弹窗右上。详见 CONTEXT.md §5。
 
 ## 当前状态（2026-10-16）
 
-v1 单机 PVE 已可完整游玩（选卡 → 战斗 → 终局战绩页），验证链全绿（keywords `pass=1110 fail=0`）。
+v1 单机 PVE 已可完整游玩（选卡 → 战斗 → 终局战绩页），验证链全绿（keywords `pass=1122 fail=0`）。
 
 - 十一轮 UI 反馈全部落实并验证；2026-10-13 交接验证 + 全量审计修复五处缺陷 + 用户两条规则裁决（等级上限=普通骰数；受伤被动仅防御正式结算逐次）。
 - 2026-10-14 功能增补：终局战绩汇总页、局内关键词图鉴、骰型配色主题化、装饰随机改 Crypto。
@@ -84,4 +84,5 @@ v1 单机 PVE 已可完整游玩（选卡 → 战斗 → 终局战绩页），�
 - 2026-10-16：五份文档全面校订（修正场景数与失效引用、新增代码索引/字段词典/数据驱动合法取值/待办分级），代码零改动。
 - 2026-10-16（续）：用户裁决跃升与骇入同时结算时**先跃升后骇入**（骇入把跃升刚升上来的骰打掉，见 DESIGN §9/§10）；keywords 新增「跃升骇入顺序」回归场景，断言 1094 → 1098（24 → 25 组）。
 - 2026-10-16（续二）：用户裁决**一方 KO 后所有效果均不再结算**（补齐虹吸/中毒/回合结束被动 `winner<0` 守卫）；修复 shot.gd 截图路径写死旧副本的回归（改为随工程位置推导）；keywords 断言 1098 → 1110（25 → 26 组）。
+- 2026-10-16（续三）：审计复核补齐「KO 后效果停止」两处覆盖缺口——settle 荆棘循环与 commit 阶段（瞬伤/被动/曜彩面效果）补 `winner<0` 守卫，被击倒方曜彩不可用不消耗（usable/reason/roll_yaocai，界面原因「对局已结束」）；keywords 断言 1110 → 1122（26 → 27 组）。
 - 待办（详见 DESIGN §11）：P1 界面打磨（瞬伤/荆棘/中毒飘字）、P2 AI 强度改进（暂缓另议，**届时提醒用户**）、P3 局域网 PVP（中期）/ 天气（后期）/ 音效暂不加、P4 数据仓库杂项（scratch 可清理）。平衡不做调整（数值对齐官方版）。
