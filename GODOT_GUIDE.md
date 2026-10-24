@@ -2,7 +2,7 @@
 
 > 适用机器：当前 Windows 电脑（用户 zyyh2）。引擎版本：Godot 4.7.2 stable。
 > 项目路径：`D:\warrior party\game`
-> 最后更新：2026-10-16（§3a 期望输出与耗时、§3b 临时探针规范为本轮新增）。
+> 最后更新：2026-10-24（参考素材归位至 `参考素材/`、scratch 清理，路径同步；「关键词图鉴」改为「效果显示」；shot.gd 输出目录随工程位置推导并自动创建）。
 
 ## 1. 可执行文件
 
@@ -42,13 +42,14 @@ Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/sim.gd
 # 3) 假人全流程：实例化战斗场景，模拟人类点击走完对局（含重投、曜彩使用）
 Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/ui_play.gd
 
-# 4) 冒烟：选卡+战斗场景实例化跑 30 帧
+# 4) 冒烟：场景实例化 + 效果显示列表/高亮断言
 Godot_v4.7.2-stable_win64.exe --headless --path . -s res://tests/ui_smoke.gd
 
-# 5) 布局截图自检（注意：不加 --headless，需要显示器；会短暂开窗后自动退出）
+# 5) 布局截图自检（注意：不加 --headless，需要显示器；会短暂开窗后自动退出；
+#    输出目录 = 工程上一级 _frames/，随工程位置推导，不存在时自动创建）
 Godot_v4.7.2-stable_win64.exe --path . -s res://tests/shot.gd
 # 产出：_frames/shot_selectscene.png（选卡）、shot_select.png（战斗选骰态）、shot_yc.png（曜彩弹窗态）、
-#       shot_glossary.png（关键词图鉴）、shot_summary.png（终局战绩页）
+#       shot_glossary.png（效果显示）、shot_summary.png（终局战绩页）
 ```
 
 约定：**改完代码先跑 1)~4) 再汇报**；改布局/字号/演出时加跑 5) 并 Read 截图核对；其余视觉问题需方式 C 开窗人工确认。
@@ -61,7 +62,7 @@ Godot_v4.7.2-stable_win64.exe --path . -s res://tests/shot.gd
 | `keywords.gd` | `KEYWORDS pass=1122 fail=0` | <1s | 每条失败打印 `FAIL  <断言名>  <实际值>`；退出码 1 |
 | `sim.gd` | `=== balance sim ===` + 12 行 `win N/132 = XX.X%  avg_rounds N.N` | 约 1-2s | stderr 出现 `Out of bounds get index` = AI 选骰越界（等级超池类问题） |
 | `ui_play.gd` | `UI PLAY DONE winner=N round=N` | 约 1 分钟（逐帧驱动，别以为卡死） | `UI PLAY TIMEOUT round=N` = 假人 60000 帧内没打完（多半是人类阶段软锁） |
-| `ui_smoke.gd` | `UI SMOKE OK` | <1s | 场景实例化/`_ready` 报错会直接中断，无 OK |
+| `ui_smoke.gd` | `UI SMOKE OK` | <1s | 场景实例化/`_ready` 报错或效果显示断言失败会直接中断，无 OK |
 | `shot.gd` | 无输出（只存图后 `quit(0)`） | 数秒（开窗） | 闪窗即退属正常；`_frames/shot_*.png` 未更新说明中途报错 |
 
 - 胜率逐次会变（Crypto 无种子）：只有量级突变才算信号；离群值按政策**只记录不调整**（DESIGN §11）。
@@ -105,7 +106,7 @@ Shell 注意：上述命令在 cmd 与 Git Bash 下均可直接运行（命令�
 - `String.replace()` 不接受函数回调（与 Python 不同）。
 - 协程：控制器/编排函数里 `await` 信号或 timer；AI 同步路径走 `driver.gd`，人类异步路径走 `battle_ui.gd`，二者共用 `battle.gd` 分步 API。
 - `-s` 无头脚本里等帧只能用 `await process_frame`（SceneTree 脚本没有别的帧回调）；`ui_play.gd` / `shot.gd` 都是这么驱动的，所以慢是逐帧造成的，不是卡死。
-- `RichTextLabel` **没有** `set_bbcode()`：赋 `.text` 并设 `bbcode_enabled = true`；可点击词写 `[url=关键词]文字[/url]` 再连 `meta_clicked` 信号（局内图鉴入口就是这个机制，见 `glossary.gd kw_bbcode()`）。
+- `RichTextLabel` **没有** `set_bbcode()`：赋 `.text` 并设 `bbcode_enabled = true`；可点击词写 `[url=关键词]文字[/url]` 再连 `meta_clicked` 信号（局内效果显示入口就是这个机制，见 `glossary.gd kw_bbcode()`）。
 - 场景唯一名：`@onready var x = %CharsGrid` 依赖 tscn 里该节点的 `unique_name_in_owner = true`；手写/复制节点时漏设会在运行时报 "Node not found"。
 - `battle.gd` 的 `eval_cond()` / `apply_fx()` 用 `match` 分派字符串，**未命中静默失败**（条件返回 false、效果什么都不做，不报错）：新增条件/效果后必须写 keywords 断言确认真的触发了。
 - 界面文本若只在 `_ready()` 或一次性构建函数里赋值，之后不会自动更新：凡随对局变化的（HP、等级徽章、状态栏）都要挂进 `refresh()`（2026-10-15 徽章 bug 的根因）。
@@ -117,7 +118,7 @@ Shell 注意：上述命令在 cmd 与 Git Bash 下均可直接运行（命令�
 |---|---|
 | `-s` 脚本报 `Identifier "X" not declared` | 新 class_name 未进缓存 → 跑 `--headless --path . --import` |
 | 运行报 `Identifier "GameState" not found` | 误用 autoload → 改用静态类 GameStateData |
-| 编辑器打开项目卡导入 | 首次 import 需几十秒，属正常；根目录的参考件（xlsx/png，以及曾经的 mp4）在工程外，不会被导入 |
+| 编辑器打开项目卡导入 | 首次 import 需几十秒，属正常；`game/` 之外的参考件（`参考素材/` 下的 xlsx/png，以及曾经的 mp4）不会被导入 |
 | 窗口黑屏/渲染异常 | project.godot 已设 gl_compatibility（Intel Arc 核显兼容）；如仍异常改 `[rendering] renderer/rendering_method` |
 | 测试进程不退出 | SceneTree 脚本末尾必须 `quit(0)`；卡死时用任务管理器结束 Godot 进程 |
 | `ui_play.gd` 一分钟没动静 | 正常：它逐帧驱动一整局（约 60s）；真出问题会打印 `UI PLAY TIMEOUT round=N` |
@@ -125,12 +126,12 @@ Shell 注意：上述命令在 cmd 与 Git Bash 下均可直接运行（命令�
 | `sim.gd` stderr 有 `Out of bounds get index` | AI 选骰组合为空——通常是攻/防等级超过骰池上限（`selection_count` 钳制被绕过），见 DESIGN §10 2026-10-13 条目 |
 | 跑 shot.gd 时闪出一个窗口又关闭 | 正常：截图脚本需开窗渲染，截完自动 quit；无显示器环境（纯 headless 服务器）跑不了它 |
 | shot.gd 截图是黑的/空的 | 未真正开窗（加了 `--headless`）或等待帧数不够；确认 `_frames/shot_*.png` 修改时间已更新再 Read |
-| 替换 xlsx 报 `WinError 5` | 用户 Excel 正开着该表（根目录有 `~$角色，骰子参数.xlsx` 锁文件）→ 请用户先关 Excel |
+| 替换 xlsx 报 `WinError 5` | 用户 Excel 正开着该表（`参考素材/` 下有 `~$角色，骰子参数.xlsx` 锁文件）→ 请用户先关 Excel |
 
 ## 7. 与外部工具的边界
 
-- 写 xlsx（数值表）用 Python 3.13 的 zipfile 改内部 XML；**写之前确认 Excel 已关闭**（存在 `~$角色，骰子参数.xlsx` 锁文件时替换报 WinError 5）。读 xlsx 时注意：单元格 `t="s"` 的 `<v>` 是 sharedStrings 下标，需映射回原文。
+- 写 xlsx（数值表，位于 `参考素材/角色，骰子参数.xlsx`）用 Python 3.13 的 zipfile 改内部 XML；**写之前确认 Excel 已关闭**（存在 `参考素材/~$角色，骰子参数.xlsx` 锁文件时替换报 WinError 5）。读 xlsx 时注意：单元格 `t="s"` 的 `<v>` 是 sharedStrings 下标，需映射回原文。（`_xlsx/` 解包产物已清理，需要时重新解包即可。）
 - 抽视频帧用 ffmpeg：`"/d/App files/ffmpeg-n8.1.2-win64-gpl-8.1/bin/ffmpeg.exe"`（Git Bash 路径）。
 - GitHub 访问经 Watt Toolkit（Steam++）代理，直连 IP 不通。
-- git：仓库已跟踪（分支 main）。**AI 不擅自 commit / push、不擅自改 `.gitignore`**；提交时机由用户决定。注意 `.gitignore` 未忽略 Excel 锁文件 `~$*.xlsx`，`git add .` 前先看 `git status`。
+- git：仓库已跟踪（分支 main）。**git 由用户全权负责**：AI 不执行 git 操作、不跟踪不汇报仓库状态；不擅自改 `.gitignore`。注意 `.gitignore` 未忽略 Excel 锁文件 `~$*.xlsx`，提交时留意别带上。
 - AI 工具自身的坑（与 Godot 无关但会浪费时间）：控制台打印中文可能乱码（GBK 控制台）→ 让脚本写 UTF-8 文件再用 Read 看；搜索工具偶发漏报（明明存在却 "No matches"）→ 换 pattern 或直接 Read 文件确认；ripgrep 默认不支持 look-behind（`(?<!x)` 会报错）。

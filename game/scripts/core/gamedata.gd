@@ -1,7 +1,7 @@
 class_name GameData
 extends RefCounted
 
-# 数值依据：角色，骰子参数.xlsx（sheet1 角色属性 / sheet2 骰子属性）与 DESIGN.md
+# 数值依据：参考素材/角色，骰子参数.xlsx（sheet1 角色属性 / sheet2 骰子属性）与 DESIGN.md
 # pool 键为骰型面数；atk=0 表示自由选骰（少年班学院）
 # intro 字段照录 Excel 原文，界面展示不得简写
 
@@ -250,7 +250,7 @@ const YAOCAI := {
 
 const UPGRADE_CHAIN := [4, 6, 8, 12]
 
-# 关键词官方定义（照录 DESIGN.md §3，局内图鉴展示用，不得简写）
+# 关键词官方定义（照录 DESIGN.md §3，局内「效果显示」列表用，不得简写）
 const KEYWORDS := {
 	"攻击等级": "攻击时必须选择的骰子数量",
 	"防御等级": "防御时必须选择的骰子数量",

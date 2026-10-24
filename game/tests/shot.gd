@@ -1,6 +1,6 @@
 extends SceneTree
 
-# 布局截图工具：进入人类选骰阶段后截两张（常规 / 曜彩弹窗）
+# 布局截图工具：依次截取选卡 / 战斗 / 曜彩弹窗 / 效果显示 / 战绩页五张
 # godot --path . -s res://tests/shot.gd
 
 func _init() -> void:
