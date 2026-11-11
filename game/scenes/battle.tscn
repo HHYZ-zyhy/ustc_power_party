@@ -34,6 +34,15 @@ unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 30
 
+[node name="EnemyHpBar" type="ProgressBar" parent="EnemyBar/EnemyVBox/EnemyRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(180, 16)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 4
+tooltip_text = "生命值"
+show_percentage = false
+
 [node name="EnemyYc" type="Label" parent="EnemyBar/EnemyVBox/EnemyRow"]
 unique_name_in_owner = true
 layout_mode = 2
@@ -178,6 +187,15 @@ unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 30
 
+[node name="PlayerHpBar" type="ProgressBar" parent="PlayerBar/PlayerVBox/PlayerRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(180, 16)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 4
+tooltip_text = "生命值"
+show_percentage = false
+
 [node name="PlayerYc" type="Label" parent="PlayerBar/PlayerVBox/PlayerRow"]
 unique_name_in_owner = true
 layout_mode = 2
@@ -233,10 +251,10 @@ unique_name_in_owner = true
 visible = false
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -560.0
+offset_left = -620.0
 offset_top = 100.0
 offset_right = -40.0
-offset_bottom = 560.0
+offset_bottom = 600.0
 grow_horizontal = 0
 
 [node name="YcVBox" type="VBoxContainer" parent="YcPopup"]
@@ -302,9 +320,9 @@ anchor_top = 0.5
 anchor_right = 0.5
 anchor_bottom = 0.5
 offset_left = -520.0
-offset_top = -360.0
+offset_top = -260.0
 offset_right = 520.0
-offset_bottom = 360.0
+offset_bottom = 260.0
 grow_horizontal = 2
 grow_vertical = 2
 
@@ -318,14 +336,10 @@ layout_mode = 2
 horizontal_alignment = 1
 theme_override_font_sizes/font_size = 40
 
-[node name="ChartHost" type="Control" parent="SummaryView/SumPanel/SumVBox"]
-unique_name_in_owner = true
-layout_mode = 2
-custom_minimum_size = Vector2(0, 260)
-
 [node name="SumStats" type="RichTextLabel" parent="SummaryView/SumPanel/SumVBox"]
 unique_name_in_owner = true
 layout_mode = 2
+size_flags_vertical = 3
 bbcode_enabled = true
 fit_content = true
 theme_override_font_sizes/normal_font_size = 26

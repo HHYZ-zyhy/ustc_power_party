@@ -69,7 +69,11 @@ func _trigger_bonus(p: Dictionary, combo: Array, phase: String) -> float:
 					if v % 2 != 0:
 						ok = false
 			"has_pair": ok = _pairs(values) >= 1
-			"all_same": ok = values.size() > 0
+			"all_same":
+				ok = values.size() > 0
+				for v in values:
+					if v != values[0]:
+						ok = false
 		if not ok:
 			continue
 		for fx in pas.fx:
@@ -81,7 +85,9 @@ func _trigger_bonus(p: Dictionary, combo: Array, phase: String) -> float:
 				"hack": bonus += 3.0
 				"instant_per_pair": bonus += 3.0 * _pairs(values)
 				"leech": bonus += sum * 0.25
-				"unyielding_once": bonus += 6.0
+				"unyielding_once":
+					if not p.unyielding_used:
+						bonus += 6.0
 	for d in combo:
 		if d.is_yaocai():
 			for fx in GameData.YAOCAI[d.yaocai].faces[d.face].fx:

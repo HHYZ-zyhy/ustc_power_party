@@ -16,6 +16,7 @@ var _en_committed: bool = false
 
 @onready var enemy_name: Label = %EnemyName
 @onready var enemy_hp: Label = %EnemyHp
+@onready var enemy_hp_bar: ProgressBar = %EnemyHpBar
 @onready var enemy_yc: Label = %EnemyYc
 @onready var enemy_status: RichTextLabel = %EnemyStatus
 @onready var enemy_passive: RichTextLabel = %EnemyPassive
@@ -26,6 +27,7 @@ var _en_committed: bool = false
 @onready var player_passive: RichTextLabel = %PlayerPassive
 @onready var player_name: Label = %PlayerName
 @onready var player_hp: Label = %PlayerHp
+@onready var player_hp_bar: ProgressBar = %PlayerHpBar
 @onready var player_yc: Label = %PlayerYc
 @onready var player_status: RichTextLabel = %PlayerStatus
 @onready var dice_row: HBoxContainer = %DiceRow
@@ -47,18 +49,20 @@ var _en_committed: bool = false
 @onready var sum_title: Label = %SumTitle
 @onready var sum_stats: RichTextLabel = %SumStats
 @onready var sum_btn: Button = %SumBtn
-@onready var chart_host: Control = %ChartHost
 var roller: Node
 var glossary: GlossaryPanel
-var sum_chart: HpChart
-var hp_hist: Array = [[], []]
 var _badge_atk := {}   # idx -> Label：攻等级徽章（被动改等级后需随 refresh 更新）
 var _badge_def := {}   # idx -> Label：防等级徽章
+var _hit_seen: int = 0 # battle.hits 已消费到的位置（每次掉血只飘一次字/闪一次红）
 
 func _ready() -> void:
 	rng = GameRng.new()
 	ai = AIController.new()
 	battle = Battle.new()
+	# 直接运行 battle.tscn 调试时没有选卡结果：回退到默认组合（正常流程由 select_ui 写入）
+	if GameStateData.char_id == "":
+		GameStateData.char_id = "physics"
+		GameStateData.yc_name = "网络渗透"
 	var ids: Array = GameData.CHARACTERS.keys()
 	var others: Array = ids.duplicate()
 	others.erase(GameStateData.char_id)
@@ -74,14 +78,31 @@ func _ready() -> void:
 	yc_close_btn.pressed.connect(_on_yc_close)
 	glossary = GlossaryPanel.new()
 	add_child(glossary)
-	sum_chart = HpChart.new()
-	sum_chart.set_anchors_preset(Control.PRESET_FULL_RECT)
-	chart_host.add_child(sum_chart)
 	for r in [info_label, enemy_status, player_status, enemy_passive, player_passive, yc_intro, sum_stats]:
 		r.meta_clicked.connect(_on_kw_meta)
 	roller = get_node("RollView/SubViewport/DiceRoll")
+	_style_hp_bar(enemy_hp_bar)
+	_style_hp_bar(player_hp_bar)
+	get_viewport().size_changed.connect(func() -> void:
+		_fit_yc_popup()
+		_fit_sum_panel())
+	_fit_yc_popup()
+	_fit_sum_panel()
 	_refresh_static()
 	_run()
+
+func _style_hp_bar(bar: ProgressBar) -> void:
+	bar.show_percentage = false
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.16, 0.09, 0.13)
+	bg.border_color = Color(0.45, 0.20, 0.29)
+	bg.set_border_width_all(1)
+	bg.set_corner_radius_all(6)
+	bar.add_theme_stylebox_override("background", bg)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = HP_RED
+	fill.set_corner_radius_all(6)
+	bar.add_theme_stylebox_override("fill", fill)
 
 func _wait(sec: float) -> void:
 	await get_tree().create_timer(sec).timeout
@@ -120,6 +141,16 @@ func _fx_text(fx: Dictionary) -> String:
 
 const BADGE_ATK_BG := Color(0.82, 0.32, 0.22)
 const BADGE_DEF_BG := Color(0.23, 0.45, 0.80)
+
+# HP 进度条（用户指定色 #E9517D）与掉血飘字的来源文案
+const HP_RED := Color(0.914, 0.318, 0.490)
+const HIT_KIND_TEXT := {
+	"combo": "连击", "counter": "反击", "instant": "瞬伤", "thorns": "荆棘", "poison": "中毒",
+}
+const YC_POPUP_BASE := Vector2(580, 500)
+const YC_POPUP_MARGIN := 40.0
+const YC_POPUP_TOP := 100.0
+const SUM_PANEL_BASE := Vector2(1040, 520)
 
 # 骰型配色（用户指定，与 3D 演出同色系）：4 天蓝 / 6 紫 / 8 橙 / 12 与曜彩近黑+蓝紫点缀
 const TIER_BG := {4: Color(0.451, 0.910, 0.988), 6: Color(0.765, 0.365, 0.969), 8: Color(0.969, 0.812, 0.682), 12: Color(0.10, 0.10, 0.15)}
@@ -225,6 +256,10 @@ func refresh() -> void:
 	var en: Dictionary = battle.players[1]
 	player_hp.text = "HP %d/%d" % [me.hp, me.hp_max]
 	enemy_hp.text = "HP %d/%d" % [en.hp, en.hp_max]
+	player_hp_bar.max_value = maxi(1, me.hp_max)
+	player_hp_bar.value = me.hp
+	enemy_hp_bar.max_value = maxi(1, en.hp_max)
+	enemy_hp_bar.value = en.hp
 	player_yc.text = _yc_text(me)
 	enemy_yc.text = _yc_text(en)
 	_refresh_badges()
@@ -341,6 +376,7 @@ func refresh() -> void:
 	btn_confirm.disabled = not _human_active
 	if battle.log.size() > 0:
 		log_line.text = _log_text(battle.log[battle.log.size() - 1])
+	_flush_hits()
 
 func _log_text(s: String) -> String:
 	if s.begins_with("KO: player"):
@@ -381,27 +417,39 @@ func _refresh_preview() -> void:
 	var sum := 0
 	for d in _sel:
 		sum += d.value
-	var ctx := {"flags": {}, "sel": _sel, "values": [], "atk_value": sum, "bonus": 0, "face_points": 0}
+	# 预期效果按实际攻击值判定（含已有力量层数；网安「攻击值≥19」等条件在选骰时就要看准）
+	var ctx := {"flags": {}, "sel": _sel, "values": [], "atk_value": sum + battle.strength_total(p), "bonus": 0, "face_points": 0}
 	for pas in p.cfg.passives:
 		if pas.t != _phase and not (_phase == "attack" and pas.t == "attack_after"):
 			continue
 		if battle.eval_cond(pas.c, p, _sel, ctx):
 			for fx in pas.fx:
-				var t: String = _fx_text(fx)
-				if not triggered.has(t):
-					triggered.append(t)
+				_push_preview_fx(triggered, fx)
 	for d in _sel:
 		if d.is_yaocai():
 			for fx in GameData.YAOCAI[d.yaocai].faces[d.face].fx:
-				var t2: String = _fx_text(fx)
-				if not triggered.has(t2):
-					triggered.append(t2)
+				_push_preview_fx(triggered, fx)
 	if triggered.size() > 0:
 		info_label.text = (GlossaryPanel.kw_bbcode("预期效果：%s" % "、".join(triggered)))
 		info_label.add_theme_color_override("default_color", Color(1.0, 0.84, 0.42))
 	else:
 		info_label.text = "预期效果：无"
 		info_label.add_theme_color_override("default_color", Color(0.62, 0.66, 0.72))
+
+# 预期效果入列：连击可多来源叠加，显示为「连击×N」；其余效果仍去重
+func _push_preview_fx(arr: Array, fx: Dictionary) -> void:
+	var t: String = _fx_text(fx)
+	if fx.op == "combo":
+		var idx := arr.find("连击")
+		if idx < 0:
+			arr.append("连击")
+		elif arr[idx].begins_with("连击×"):
+			arr[idx] = "连击×%d" % (int(arr[idx].substr(3)) + 1)
+		else:
+			arr[idx] = "连击×2"
+		return
+	if not arr.has(t):
+		arr.append(t)
 
 # 逐骰效果提示（参照原作：骰子点数下方标注可能出现的效果）
 # 规则：该骰凭借自身点数参与当前骰池即可达成条件时，标注对应效果；
@@ -456,7 +504,7 @@ func _die_fx_hints(p: Dictionary, need: int) -> Dictionary:
 					var best := 0
 					for i in range(maxi(0, rest.size() - (need - 1)), rest.size()):
 						best += rest[i]
-					show = d.value + best >= pas.c.n
+					show = d.value + best + battle.strength_total(p) >= pas.c.n
 			if show:
 				for fx in pas.fx:
 					var t: String = _fx_text(fx)
@@ -477,29 +525,19 @@ func _die_less(a: Die, b: Die) -> bool:
 	return (1 if a.is_yaocai() else 0) < (1 if b.is_yaocai() else 0)
 
 func _is_mingding(d: Die) -> bool:
-	if not d.is_yaocai():
-		return false
-	for fx in GameData.YAOCAI[d.yaocai].faces[d.face].fx:
-		if fx.op == "mingding":
-			return true
-	return false
+	return battle.is_mingding(d)
 
 func _run() -> void:
-	hp_hist = [[battle.players[0].hp], [battle.players[1].hp]]
 	while battle.winner < 0 and battle.round <= 80:
 		await _round_ui()
 	if battle.winner < 0:
 		# 达到回合上限仍未 KO：按 HP 判定胜者（与 driver.gd run_game 一致，避免误判人类输）
 		battle.winner = 0 if battle.players[0].hp > battle.players[1].hp else 1
-	var me: Dictionary = battle.players[0]
-	var en: Dictionary = battle.players[1]
 	_show_summary()
 	await sum_btn.pressed
 	get_tree().change_scene_to_file("res://scenes/select.tscn")
 
 func _show_summary() -> void:
-	var me: Dictionary = battle.players[0]
-	var en: Dictionary = battle.players[1]
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.13, 0.14, 0.17, 0.98)
 	sb.border_color = Color(0.45, 0.48, 0.55)
@@ -509,11 +547,6 @@ func _show_summary() -> void:
 	sum_title.text = "对局结束：%s" % ("你赢了！" if battle.winner == 0 else "你输了")
 	sum_title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3) if battle.winner == 0 else Color(1.0, 0.4, 0.35))
 	sum_stats.text = (GlossaryPanel.kw_bbcode(_summary_text()))
-	sum_chart.h0 = hp_hist[0]
-	sum_chart.h1 = hp_hist[1]
-	sum_chart.max0 = me.hp_max
-	sum_chart.max1 = en.hp_max
-	sum_chart.queue_redraw()
 	summary_view.visible = true
 
 func _round_ui() -> void:
@@ -522,7 +555,12 @@ func _round_ui() -> void:
 	_en_committed = false
 	refresh()
 	var order := [[battle.attacker, "attack"], [1 - battle.attacker, "defense"]]
+	var def_skipped := false
 	for step in order:
+		# 攻方 commit 阶段的瞬伤可能已击倒守方：不再给已阵亡方显示防御回合
+		if battle.winner >= 0:
+			def_skipped = true
+			break
 		var idx: int = step[0]
 		var phase: String = step[1]
 		banner.text = "%s%s" % ["你" if idx == 0 else "敌方", "进攻" if phase == "attack" else "防御"]
@@ -530,23 +568,44 @@ func _round_ui() -> void:
 		await _phase_ui(idx, phase)
 	var def_idx: int = 1 - battle.attacker
 	var hp_before: int = battle.players[def_idx].hp
+	var ended_early: bool = battle.winner >= 0
 	var s: Dictionary = battle.settle()
+	var hp_after: int = battle.players[def_idx].hp
+	var lost: int = maxi(0, hp_before - hp_after)
 	var diff: int = maxi(0, s.atk - s.def)
-	var note := ""
-	if s.get("pierce", false):
-		note = "（洞穿：无视防御）"
-	elif s.dmg == 0 and diff > 0:
-		note = "（力场挡下）"
-	big.text = "攻击值 %d ｜ 防御值 %d\n差值 %d ｜ 实际伤害 %d%s\n守方生命 %d → %d" % [
-		s.atk, s.def, diff, s.dmg, note, hp_before, battle.players[def_idx].hp]
+	var settled_ko: bool = battle.winner >= 0
+	var notes: Array = _settle_notes(def_skipped, ended_early, settled_ko, s, diff)
+	var note := "" if notes.is_empty() else "（%s）" % "、".join(notes)
+	# 「主伤害」= 结算公式算出的名义伤害（溢出击杀、不屈保命时会高于实际掉血）；
+	# 「共掉血」= HP 差值（含连击/荆棘/中毒），与掉血飘字、战绩统计同口径
+	big.text = "攻击值 %d ｜ 防御值 %d\n差值 %d ｜ 主伤害 %d%s\n守方生命 %d → %d（共掉血 %d）" % [
+		s.atk, s.def, diff, s.dmg, note, hp_before, hp_after, lost]
 	refresh()
-	_hit_flash(enemy_hp if def_idx == 1 else player_hp, s.dmg + s.dmg2)
-	_hit_flash(player_hp if def_idx == 1 else enemy_hp, s.counter)
 	await _wait(2.0)
 	battle.round_close()
-	hp_hist[0].append(battle.players[0].hp)
-	hp_hist[1].append(battle.players[1].hp)
 	refresh()
+
+# 结算横幅注记：区分「防御阶段已跳过」「commit 已分胜负」「结算中（荆棘/中毒等）分出胜负」
+# 与「力场挡下」——后三种都会让主伤害为 0，不能仅凭 dmg==0 判定为力场
+func _settle_notes(def_skipped: bool, ended_early: bool, settled_ko: bool, s: Dictionary, diff: int) -> Array:
+	var notes: Array = []
+	if def_skipped:
+		notes.append("守方已被击倒，防御阶段跳过")
+	elif ended_early:
+		notes.append("攻方已被击倒，伤害不再结算")
+	elif settled_ko and s.dmg == 0 and s.get("dmg2", 0) == 0 and s.get("counter", 0) == 0:
+		notes.append("结算中已分出胜负，主伤害未造成")
+	elif s.get("pierce", false):
+		notes.append("洞穿：无视防御")
+	elif s.dmg == 0 and diff > 0:
+		notes.append("力场挡下")
+	if s.get("dmg2", 0) > 0:
+		var combo_n: int = int(s.get("combo_n", 1))
+		if combo_n > 1:
+			notes.append("连击 %d（%d 段）" % [s.dmg2, combo_n])
+		else:
+			notes.append("连击 %d" % s.dmg2)
+	return notes
 
 func _phase_ui(idx: int, phase: String) -> void:
 	battle.roll_phase(idx)
@@ -565,6 +624,18 @@ func _phase_ui(idx: int, phase: String) -> void:
 	else:
 		await _ai_phase(idx, phase)
 
+# 单次投骰/重投演出：只把传入的骰子放进 3D 视口；重投走 quick 短版动画
+func _animate_roll(dice: Array, idx: int, quick: bool = false) -> void:
+	if dice.is_empty():
+		return
+	roll_view.visible = true
+	if idx == 0:
+		roller.roll(dice, [], quick)
+	else:
+		roller.roll([], dice, quick)
+	await roller.finished
+	roll_view.visible = false
+
 # 曜彩骰投掷的 3D 演出：普通骰在 _phase_ui 已有演出，曜彩骰此前只在 2D 行直接出现、无动画
 func _animate_yaocai(idx: int) -> void:
 	var yc_die: Die = null
@@ -574,13 +645,7 @@ func _animate_yaocai(idx: int) -> void:
 			break
 	if yc_die == null:
 		return
-	roll_view.visible = true
-	if idx == 0:
-		roller.roll([yc_die], [])
-	else:
-		roller.roll([], [yc_die])
-	await roller.finished
-	roll_view.visible = false
+	await _animate_roll([yc_die], idx)
 
 func _ai_phase(idx: int, phase: String) -> void:
 	var p: Dictionary = battle.players[idx]
@@ -593,9 +658,10 @@ func _ai_phase(idx: int, phase: String) -> void:
 			var picks: Array = ai.choose_reroll(p)
 			if picks.is_empty():
 				break
-			battle.do_reroll(idx, picks)
+			# do_reroll 会把命定曜彩骰强制加入并返回实际重投集合，演出必须用它
+			picks = battle.do_reroll(idx, picks)
+			await _animate_roll(picks, idx, true)
 			refresh()
-			await _wait(0.5)
 	var count: int = battle.selection_count(idx, phase)
 	var sel: Array = ai.choose_selection(p, phase, count)
 	battle.commit_selection(idx, phase, sel)
@@ -614,6 +680,8 @@ func _human_phase(phase: String) -> void:
 	refresh()
 
 func _on_die(d: Die) -> void:
+	if not _human_active:
+		return
 	if _is_mingding(d):
 		return
 	if _sel.has(d):
@@ -637,7 +705,6 @@ func _summary_text() -> String:
 		lines.append("%s（%s）：造成 %d 伤害｜承受 %d 伤害%s" % [
 			p.cfg.name, "你" if i == 0 else "敌", st.dmg_dealt, st.dmg_taken,
 			"" if fx_parts.size() == 0 else "\n　触发：%s" % "、".join(fx_parts)])
-	lines.append("HP 曲线：蓝=你｜红=敌（横轴为回合）")
 	return "\n".join(lines)
 
 func _fx_name(op: String) -> String:
@@ -655,32 +722,48 @@ func _fx_name(op: String) -> String:
 		"upgrade_sel": return "升级"
 		"strength", "strength_set": return "力量"
 		"leap_perm": return "跃升"
+		"atk_add": return "攻击值加成"
+		"mingding": return "命定"
+		"yaocai_use_add": return "曜彩次数增加"
 		"yaocai": return "曜彩投掷"
 		"reroll": return "重投"
 		"atk_level_add", "atk_level_set": return "攻击等级变化"
 		"def_level_add": return "防御等级变化"
 	return op
 
-class HpChart extends Control:
-	var h0: Array = []
-	var h1: Array = []
-	var max0: int = 1
-	var max1: int = 1
+# 曜彩弹窗窄窗口适配：基准 580×500，右缘 40px 固定；窗口变窄时整体收窄，
+# 六面卡片从 3 列降为 2/1 列并同步降低卡片最小宽度，避免固定尺寸把弹窗顶出屏幕
+func _fit_yc_popup(vp: Vector2 = Vector2.ZERO) -> void:
+	if vp == Vector2.ZERO:
+		vp = get_viewport_rect().size
+	var w: float = minf(YC_POPUP_BASE.x, maxf(vp.x - YC_POPUP_MARGIN * 2.0, 240.0))
+	var h: float = minf(YC_POPUP_BASE.y, maxf(vp.y - YC_POPUP_TOP - YC_POPUP_MARGIN, 220.0))
+	yc_popup.offset_left = -YC_POPUP_MARGIN - w
+	yc_popup.offset_right = -YC_POPUP_MARGIN
+	yc_popup.offset_top = YC_POPUP_TOP
+	yc_popup.offset_bottom = YC_POPUP_TOP + h
+	var cols: int = 3
+	if w < 520.0:
+		cols = 2
+	if w < 360.0:
+		cols = 1
+	yc_faces.columns = cols
+	var cell_w: float = minf(170.0, (w - 48.0 - 10.0 * float(cols - 1)) / float(cols))
+	cell_w = maxf(90.0, cell_w)
+	for c in yc_faces.get_children():
+		if c is Control:
+			(c as Control).custom_minimum_size = Vector2(cell_w, 94.0)
 
-	func _draw() -> void:
-		draw_rect(Rect2(Vector2.ZERO, size), Color(0.13, 0.14, 0.18))
-		_line(h0, max0, Color(0.35, 0.75, 1.0))
-		_line(h1, max1, Color(1.0, 0.45, 0.45))
-
-	func _line(hist: Array, mx: int, col: Color) -> void:
-		if hist.size() < 2 or mx <= 0:
-			return
-		var pts := PackedVector2Array()
-		for i in range(hist.size()):
-			var x: float = size.x * float(i) / float(hist.size() - 1)
-			var y: float = size.y - size.y * float(hist[i]) / float(mx)
-			pts.append(Vector2(x, y))
-		draw_polyline(pts, col, 3.0)
+# 战绩面板同类问题：固定 1040×720 居中，窄窗口下收窄
+func _fit_sum_panel(vp: Vector2 = Vector2.ZERO) -> void:
+	if vp == Vector2.ZERO:
+		vp = get_viewport_rect().size
+	var w: float = minf(SUM_PANEL_BASE.x, maxf(vp.x - 48.0, 320.0))
+	var h: float = minf(SUM_PANEL_BASE.y, maxf(vp.y - 48.0, 240.0))
+	sum_panel.offset_left = -w * 0.5
+	sum_panel.offset_right = w * 0.5
+	sum_panel.offset_top = -h * 0.5
+	sum_panel.offset_bottom = h * 0.5
 
 func _on_yc() -> void:
 	if not _human_active or battle.players[0].yc_name == "":
@@ -692,16 +775,11 @@ func _on_yc() -> void:
 	yc_title.text = "曜彩「%s」" % p.yc_name
 	yc_intro.text = (GlossaryPanel.kw_bbcode(GameData.YAOCAI[p.yc_name].intro))
 	for c in yc_faces.get_children():
+		yc_faces.remove_child(c)
 		c.queue_free()
 	for f in GameData.YAOCAI[p.yc_name].faces:
-		var l := RichTextLabel.new()
-		var fx_text: String = _fx_list_text(f.fx) if f.fx.size() > 0 else "无效果"
-		l.bbcode_enabled = true
-		l.fit_content = true
-		l.text = ("[center]%d点\n%s[/center]" % [f.points, GlossaryPanel.kw_bbcode(fx_text)])
-		l.add_theme_font_size_override("normal_font_size", 24)
-		l.meta_clicked.connect(_on_kw_meta)
-		yc_faces.add_child(l)
+		yc_faces.add_child(_make_face_cell(f))
+	_fit_yc_popup()
 	var reason: String = battle.yaocai_reason(0, _phase)
 	yc_uses.text = "本局还可使用%d次" % p.yc_uses
 	if reason != "":
@@ -709,7 +787,48 @@ func _on_yc() -> void:
 	yc_use_btn.disabled = reason != ""
 	yc_popup.visible = true
 
+# 曜彩六面表：每面一张卡片（点数 + 效果）。此前用 fit_content 的 RichTextLabel 直接塞进
+# GridContainer，最小宽度为 0，被挤成一字一列的竖条，六面内容完全看不出来
+func _make_face_cell(f: Dictionary) -> Control:
+	var cell := PanelContainer.new()
+	cell.custom_minimum_size = Vector2(170, 94)
+	cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.10, 0.10, 0.15, 0.95)
+	sb.border_color = Color(0.55, 0.45, 0.95) if f.fx.size() > 0 else Color(0.33, 0.34, 0.42)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(10)
+	sb.content_margin_left = 8.0
+	sb.content_margin_right = 8.0
+	sb.content_margin_top = 6.0
+	sb.content_margin_bottom = 6.0
+	cell.add_theme_stylebox_override("panel", sb)
+	var box := VBoxContainer.new()
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.add_theme_constant_override("separation", 2)
+	cell.add_child(box)
+	var pts := Label.new()
+	pts.text = "%d点" % f.points
+	pts.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pts.add_theme_font_size_override("font_size", 32)
+	pts.add_theme_color_override("font_color", Color(0.93, 0.94, 0.98))
+	box.add_child(pts)
+	var fx_text: String = _fx_list_text(f.fx) if f.fx.size() > 0 else "无效果"
+	var fx := RichTextLabel.new()
+	fx.bbcode_enabled = true
+	fx.fit_content = true
+	fx.scroll_active = false
+	fx.text = ("[center]%s[/center]" % GlossaryPanel.kw_bbcode(fx_text))
+	fx.add_theme_font_size_override("normal_font_size", 20)
+	fx.add_theme_color_override("default_color",
+		Color(1.0, 0.85, 0.4) if f.fx.size() > 0 else Color(0.62, 0.62, 0.62))
+	fx.meta_clicked.connect(_on_kw_meta)
+	box.add_child(fx)
+	return cell
+
 func _on_yc_use() -> void:
+	if not _human_active:
+		return
 	yc_popup.visible = false
 	if battle.yaocai_usable(0, _phase):
 		battle.roll_yaocai(0, _phase)
@@ -724,12 +843,28 @@ func _on_yc_close() -> void:
 	yc_popup.visible = false
 
 func _on_reroll() -> void:
+	if not _human_active or battle.winner >= 0:
+		return
 	if _phase != "attack" or battle.rerolls_left(0) <= 0 or _sel.size() < 1:
 		return
-	battle.do_reroll(0, _sel.duplicate())
+	var picks: Array = battle.do_reroll(0, _sel.duplicate())
+	_human_active = false   # 演出期间锁输入，避免动画中点选/确认
+	# 不立即 refresh：先保持旧骰面，等翻滚停稳后再一次性显示新点数（少一次重建、也不剧透）
+	info_label.text = ""
+	for c in dice_row.get_children():
+		if c is Button:
+			(c as Button).disabled = true
+	btn_confirm.disabled = true
+	btn_reroll.disabled = true
+	btn_yc.disabled = true
+	yc_popup.visible = false
+	await _animate_roll(picks, 0, true)
+	_human_active = true
 	refresh()
 
 func _on_confirm() -> void:
+	if not _human_active:
+		return
 	if _need > 0 and _sel.size() != _need:
 		info_label.text = "必须恰好选 %d 颗！" % _need
 		return
@@ -737,21 +872,42 @@ func _on_confirm() -> void:
 		info_label.text = "至少选 1 颗！"
 		return
 	battle.commit_selection(0, _phase, _sel.duplicate())
+	_human_active = false   # 立即锁输入：commit 可能有瞬伤，避免信号恢复前双击二次提交
 	refresh()
 	phase_confirmed.emit()
 
-func _hit_flash(lbl: Label, dmg: int) -> void:
-	if dmg <= 0:
+# 掉血反馈：Battle.damage() 每次扣血都往 battle.hits 记一笔，refresh 时消费新增事件。
+# 主伤害/连击/反击/瞬伤/荆棘/中毒共用同一套闪红+飘字，非主伤害额外标注来源
+# （此前只有 settle 的主伤害/连击/反击有反馈，瞬伤/荆棘/中毒掉血完全看不到原因）
+func _flush_hits() -> void:
+	if battle == null or _hit_seen >= battle.hits.size():
 		return
+	var batch: Array = battle.hits.slice(_hit_seen)
+	_hit_seen = battle.hits.size()
+	var stack := [0, 0]
+	for h in batch:
+		var idx: int = int(h.target)
+		_damage_feedback(idx, int(h.amount), str(h.kind), stack[idx])
+		stack[idx] += 1
+
+func _damage_feedback(idx: int, amount: int, kind: String, stack: int) -> void:
+	if amount <= 0:
+		return
+	var lbl: Label = enemy_hp if idx == 1 else player_hp
 	var tw := create_tween()
 	tw.tween_property(lbl, "modulate", Color(1.0, 0.25, 0.2), 0.15)
 	tw.tween_property(lbl, "modulate", Color.WHITE, 0.45)
+	var kind_txt: String = HIT_KIND_TEXT.get(kind, "")
 	var f := Label.new()
-	f.text = "-%d" % dmg
-	f.add_theme_font_size_override("font_size", 44)
+	f.text = ("-%d" % amount) + ("" if kind_txt == "" else " %s" % kind_txt)
+	f.add_theme_font_size_override("font_size", 40 if kind_txt == "" else 34)
 	f.add_theme_color_override("font_color", Color(1.0, 0.2, 0.15))
+	f.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
+	f.add_theme_constant_override("outline_size", 6)
 	add_child(f)
-	f.global_position = lbl.global_position + Vector2(lbl.size.x + 12, -14)
+	# 敌方血条在屏幕顶部：同批多笔掉血向下叠，避免第二笔被顶出屏幕；我方在底部则向上叠
+	var dir: float = 1.0 if idx == 1 else -1.0
+	f.global_position = lbl.global_position + Vector2(lbl.size.x + 12, -14.0 + dir * 46.0 * float(stack))
 	var tf := create_tween()
 	tf.set_parallel(true)
 	tf.tween_property(f, "global_position:y", f.global_position.y - 56, 0.9)

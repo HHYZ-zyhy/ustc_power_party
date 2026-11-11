@@ -36,7 +36,7 @@ unique_name_in_owner = true
 columns = 4
 
 [node name="YcTitle" type="Label" parent="VBox"]
-text = "曜彩骰（选 1 种）"
+text = "曜彩骰（选 1 种；选中角色后自动选推荐）"
 
 [node name="YcScroll" type="ScrollContainer" parent="VBox"]
 custom_minimum_size = Vector2(0, 110)

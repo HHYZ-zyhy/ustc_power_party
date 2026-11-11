@@ -9,6 +9,8 @@ extends PanelContainer
 const GOLD := Color(1.0, 0.84, 0.42)
 const NAME_NORMAL := Color(0.94, 0.95, 0.98)
 const DESC_NORMAL := Color(0.84, 0.86, 0.92)
+const BASE_SIZE := Vector2(1000, 820)
+const EDGE_MARGIN := 24.0
 
 var _scroll: ScrollContainer
 var _rows := {}    # 关键词 -> PanelContainer
@@ -46,6 +48,8 @@ func _ready() -> void:
 	offset_bottom = 410.0
 	grow_horizontal = 2
 	grow_vertical = 2
+	get_viewport().size_changed.connect(func() -> void: _fit_to_viewport())
+	_fit_to_viewport()
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 10)
 	add_child(vbox)
@@ -98,6 +102,17 @@ func _ready() -> void:
 			line.thickness = 1
 			sep.add_theme_stylebox_override("separator", line)
 			list.add_child(sep)
+
+# 窄窗口适配：基准 1000×820 居中，窗口更小时按边距收窄（项目基准 1080p 下尺寸不变）
+func _fit_to_viewport(vp: Vector2 = Vector2.ZERO) -> void:
+	if vp == Vector2.ZERO:
+		vp = get_viewport_rect().size
+	var w: float = minf(BASE_SIZE.x, maxf(vp.x - EDGE_MARGIN * 2.0, 240.0))
+	var h: float = minf(BASE_SIZE.y, maxf(vp.y - EDGE_MARGIN * 2.0, 220.0))
+	offset_left = -w * 0.5
+	offset_right = w * 0.5
+	offset_top = -h * 0.5
+	offset_bottom = h * 0.5
 
 func _make_row(kw: String) -> Control:
 	var row := PanelContainer.new()

@@ -4,6 +4,8 @@ extends SceneTree
 # godot --headless -s res://tests/ui_play.gd
 
 func _init() -> void:
+	GameStateData.char_id = "physics"
+	GameStateData.yc_name = "网络渗透"
 	var ui: Node = load("res://scenes/battle.tscn").instantiate()
 	root.add_child(ui)
 	var done := false
