@@ -18,11 +18,6 @@ func upgrade() -> bool:
 	sides = CHAIN[i + 1]
 	return true
 
-func face_points() -> int:
-	if is_yaocai():
-		return GameData.YAOCAI[yaocai].faces[face].points
-	return value
-
 func roll(rng: RefCounted) -> void:
 	if is_yaocai():
 		face = rng.randi_range(0, 5)

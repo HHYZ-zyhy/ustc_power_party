@@ -7,6 +7,9 @@ static func run_round(battle: Battle, ctrls: Array) -> Dictionary:
 	battle.round_open()
 	var order := [[battle.attacker, "attack"], [1 - battle.attacker, "defense"]]
 	for step in order:
+		# 攻方 commit 瞬伤可能已击倒守方：跳过已阵亡方的防御阶段
+		if battle.winner >= 0:
+			break
 		var idx: int = step[0]
 		var phase: String = step[1]
 		var p: Dictionary = battle.players[idx]

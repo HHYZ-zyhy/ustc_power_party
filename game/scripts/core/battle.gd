@@ -16,6 +16,9 @@ var _ctx_d: Dictionary = {}
 var atk_value: int = 0
 var def_value: int = 0
 var stats: Array = []
+# 逐次掉血事件（界面飘字/闪红用）：{target: 受击方索引, amount: 实际扣血, kind: main/combo/counter/instant/thorns/poison}
+# damage() 是唯一扣血入口，事件按发生顺序累积，界面自行记录已消费位置
+var hits: Array = []
 
 func _make_player(char_id: String, yc_name: String) -> Dictionary:
 	var cfg: Dictionary = GameData.CHARACTERS[char_id]
@@ -71,21 +74,30 @@ func strength_total(p: Dictionary) -> int:
 	return s
 
 func heal(p: Dictionary, n: int) -> void:
+	if n <= 0 or p.hp <= 0:
+		return   # 已阵亡不复活（KO 后所有效果停止）
 	p.hp = mini(p.hp + n, p.hp_max)
 
-func damage(p: Dictionary, n: int, idx: int, dealer: int = -1) -> void:
-	if n <= 0:
-		return
+func damage(p: Dictionary, n: int, idx: int, dealer: int = -1, kind: String = "") -> int:
+	if n <= 0 or p.hp <= 0:
+		return 0
+	var before: int = p.hp
 	if p.unyielding_round and p.hp - n <= 0:
 		p.hp = 1
 	else:
 		p.hp = maxi(0, p.hp - n)
-	stats[idx].dmg_taken += n
+	var actual: int = before - p.hp
+	# 战绩统计与实际扣血同口径（溢出击杀、不屈保命时名义伤害 ≠ 实际掉血），
+	# 与 hits 掉血事件、界面飘字、战绩统计一致
+	stats[idx].dmg_taken += actual
 	if dealer >= 0:
-		stats[dealer].dmg_dealt += n
+		stats[dealer].dmg_dealt += actual
+	if actual > 0:
+		hits.append({"target": idx, "amount": actual, "kind": kind})
 	if p.hp <= 0 and winner < 0:
 		winner = 1 - idx
 		log.append("KO: player%d" % idx)
+	return actual
 
 func _pairs_count(values: Array) -> int:
 	var counts := {}
@@ -138,7 +150,8 @@ func apply_fx(fx: Dictionary, holder: Dictionary, holder_idx: int, opp: Dictiona
 	var flags: Dictionary = ctx.flags
 	stats[holder_idx].fx[fx.op] = stats[holder_idx].fx.get(fx.op, 0) + 1
 	match fx.op:
-		"combo": flags.combo = true
+		# 多来源连击叠加（用户裁决 2026-11-11）：每个来源各记 1 段，settle() 逐段结算
+		"combo": flags.combo_count = flags.get("combo_count", 0) + 1
 		"pierce": flags.pierce = true
 		"atk_add": ctx.bonus = ctx.get("bonus", 0) + fx.n
 		"upgrade_sel":
@@ -146,8 +159,8 @@ func apply_fx(fx: Dictionary, holder: Dictionary, holder_idx: int, opp: Dictiona
 				if not d.is_yaocai():
 					d.upgrade()
 		"hack": holder.hack_pending = true
-		"instant": damage(opp, fx.n, 1 - holder_idx, holder_idx)
-		"instant_per_pair": damage(opp, _pairs_count(ctx.values) * fx.n, 1 - holder_idx, holder_idx)
+		"instant": damage(opp, fx.n, 1 - holder_idx, holder_idx, "instant")
+		"instant_per_pair": damage(opp, _pairs_count(ctx.values) * fx.n, 1 - holder_idx, holder_idx, "instant")
 		"thorns": holder.thorns += fx.n
 		"field": holder.field = true
 		"unyielding": holder.unyielding_round = true
@@ -227,8 +240,9 @@ func yaocai_reason(idx: int, phase: String) -> String:
 	return "当前不可用"
 
 func roll_yaocai(idx: int, phase: String) -> void:
-	if winner >= 0:
-		return   # 一方 KO 后不投曜彩、不消耗次数（用户裁决 2026-10-16）
+	# 兜底：次数/本回合已投/使用条件/胜负任一不满足都不消耗、不入池
+	if not yaocai_usable(idx, phase):
+		return
 	var p: Dictionary = players[idx]
 	var d := Die.new()
 	d.yaocai = p.yc_name
@@ -242,11 +256,20 @@ func roll_yaocai(idx: int, phase: String) -> void:
 func rerolls_left(idx: int) -> int:
 	return players[idx].rerolls
 
-func do_reroll(idx: int, dice: Array) -> void:
-	for d in dice:
+func do_reroll(idx: int, dice: Array) -> Array:
+	if dice.is_empty() or players[idx].rerolls <= 0:
+		return []
+	# 命定曜彩骰无法取消选中：只要发生重投，就必须把它一起重投（用户 2026-11-11 澄清）。
+	# 返回值是实际重投的骰子，调用方应以它驱动 3D 演出，避免漏演强制加入的命定骰。
+	var picks: Array = dice.duplicate()
+	for d in players[idx].dice:
+		if is_mingding(d) and not picks.has(d):
+			picks.append(d)
+	for d in picks:
 		d.roll(rng)
 	players[idx].rerolls -= 1
 	stats[idx].fx["reroll"] = stats[idx].fx.get("reroll", 0) + 1
+	return picks
 
 func selection_count(idx: int, phase: String) -> int:
 	var p: Dictionary = players[idx]
@@ -260,21 +283,25 @@ func selection_count(idx: int, phase: String) -> int:
 	n = mini(n, _pool_n(p))
 	return mini(n, p.dice.size())
 
+# 曜彩骰当前面是否带「命定」：投出后必须被选中，且重投时不能被排除在外
+func is_mingding(d: Die) -> bool:
+	if not d.is_yaocai() or d.face < 0:
+		return false
+	for fx in GameData.YAOCAI[d.yaocai].faces[d.face].fx:
+		if fx.op == "mingding":
+			return true
+	return false
+
 func _enforce_mingding(p: Dictionary, sel: Array, count: int) -> Array:
 	for d in p.dice:
-		if d.is_yaocai() and d.face >= 0:
-			var has_md := false
-			for fx in GameData.YAOCAI[d.yaocai].faces[d.face].fx:
-				if fx.op == "mingding":
-					has_md = true
-			if has_md and not sel.has(d):
-				sel.append(d)
-				if count > 0 and sel.size() > count:
-					var worst = null
-					for cand in sel:
-						if cand != d and (worst == null or cand.value < worst.value):
-							worst = cand
-					sel.erase(worst)
+		if is_mingding(d) and not sel.has(d):
+			sel.append(d)
+			if count > 0 and sel.size() > count:
+				var worst = null
+				for cand in sel:
+					if cand != d and (worst == null or cand.value < worst.value):
+						worst = cand
+				sel.erase(worst)
 	return sel
 
 func commit_selection(idx: int, phase: String, sel_in: Array) -> void:
@@ -314,13 +341,23 @@ func commit_selection(idx: int, phase: String, sel_in: Array) -> void:
 	# 与攻防被动（含瞬伤）全部跳过——被击倒方的瞬伤不再打到已获胜方
 	if winner < 0:
 		for d in sel:
+			if winner >= 0:
+				break
 			if d.is_yaocai():
 				ctx.face_points = d.value
 				for fx in GameData.YAOCAI[d.yaocai].faces[d.face].fx:
+					if winner >= 0:
+						break
 					apply_fx(fx, p, idx, opp, ctx)
 		for pas in p.cfg.passives:
-			if pas.t == phase and eval_cond(pas.c, p, sel, ctx):
+			if winner >= 0:
+				break
+			# 第一轮只评估非 sum_ge 的 attack 被动；sum_ge 依赖攻击值，留到下面攻击值算出后评估，
+			# 避免条件 n≤0 时被提前触发一次
+			if pas.t == phase and not (phase == "attack" and pas.c.t == "sum_ge") and eval_cond(pas.c, p, sel, ctx):
 				for fx in pas.fx:
+					if winner >= 0:
+						break
 					apply_fx(fx, p, idx, opp, ctx)
 	if phase == "attack":
 		var sum := 0
@@ -330,8 +367,14 @@ func commit_selection(idx: int, phase: String, sel_in: Array) -> void:
 		ctx.atk_value = atk_value
 		if winner < 0:
 			for pas in p.cfg.passives:
-				if (pas.t == "attack_after" or (pas.t == "attack" and pas.c.t == "sum_ge")) and eval_cond(pas.c, p, sel, ctx):
+				if winner >= 0:
+					break
+				# 「攻击时·攻击值≥N」类被动必须在此判定（条件依赖本次攻击值，效果只给下次防御加成）；
+				# 「攻击后」被动不在这里结算——见 settle() 中攻击结算之后（用户裁决 2026-11-11：不参与本次伤害）
+				if pas.t == "attack" and pas.c.t == "sum_ge" and eval_cond(pas.c, p, sel, ctx):
 					for fx in pas.fx:
+						if winner >= 0:
+							break
 						apply_fx(fx, p, idx, opp, ctx)
 		_ctx_a = ctx
 	else:
@@ -342,6 +385,12 @@ func commit_selection(idx: int, phase: String, sel_in: Array) -> void:
 		_ctx_d = ctx
 
 func round_open() -> void:
+	# 清掉上一回合的上下文，避免防御阶段被跳过（攻方 commit 瞬伤致胜）时
+	# settle 仍读到上一回合的 bonus/攻防值
+	_ctx_a = {}
+	_ctx_d = {}
+	atk_value = 0
+	def_value = 0
 	for p in players:
 		p.leap_round = p.leap_perm
 		p.sel = []
@@ -391,7 +440,7 @@ func _apply_hacks() -> void:
 			var pick: Die = targets[rng.randi_range(0, targets.size() - 1)]
 			pick.value = 2
 
-# 结算顺序：跃升/骇入先改点 → 重算攻防值 → 荆棘 → 主伤害/连击/洞穿/反击 → 中毒
+# 结算顺序：跃升/骇入先改点 → 重算攻防值 → 荆棘 → 主伤害/连击/洞穿/反击 → 攻击后被动 → 中毒
 # 跃升与骇入同时结算时先跃升后骇入（用户裁决 2026-10-16）：骇入会把跃升刚升上来的骰打掉
 # 任何改骰点数的效果必须放在求和之前，否则伤害用旧值（骇入曾因此失效）
 func settle() -> Dictionary:
@@ -399,10 +448,12 @@ func settle() -> Dictionary:
 	var d := 1 - a
 	var A: Dictionary = players[a]
 	var D: Dictionary = players[d]
-	var summary := {"dmg": 0, "dmg2": 0, "counter": 0, "atk": 0, "def": 0, "pierce": false}
-	_apply_leap(a)
-	_apply_leap(d)
-	_apply_hacks()
+	var summary := {"dmg": 0, "dmg2": 0, "combo_n": 0, "counter": 0, "atk": 0, "def": 0, "pierce": false}
+	# commit 阶段瞬伤可能已分出胜负：跃升/骇入也属于「效果」，KO 后不得再改点
+	if winner < 0:
+		_apply_leap(a)
+		_apply_leap(d)
+		_apply_hacks()
 	var sa := 0
 	for die in A.sel:
 		sa += die.value
@@ -421,7 +472,7 @@ func settle() -> Dictionary:
 		if winner < 0 and p.thorns > 0:
 			var t: int = p.thorns
 			p.thorns = 0
-			damage(p, t, i)
+			damage(p, t, i, -1, "thorns")
 	if winner >= 0:
 		return summary
 	var dmg := 0
@@ -432,14 +483,19 @@ func settle() -> Dictionary:
 	else:
 		dmg = maxi(0, atk_value - def_value)
 	summary.dmg = dmg
-	damage(D, dmg, d, a)
+	damage(D, dmg, d, a, "main")
 	# 被击倒后不再触发受伤被动（与连击/反击的 winner 守卫一致；用户裁决 2026-10-15）
 	if winner < 0:
 		_eval_on_damaged(D, d, A, a, dmg)
 	# 一方 KO 后所有效果不再结算（用户裁决 2026-10-16）：虹吸/中毒与连击/反击/受伤被动口径一致
 	if winner < 0 and _ctx_a.flags.get("leech", 0) > 0:
 		heal(A, int(dmg * _ctx_a.flags.leech / 100.0))
-	if winner < 0 and _ctx_a.flags.get("combo", false):
+	# 多来源连击叠加（用户裁决 2026-11-11）：N 个来源 = 主伤害之后再结算 N 段连击
+	# （少年班/物理学院被动 + 重复试验面 4+连击可同时触发）；每段独立判定 KO/受伤被动/虹吸
+	var combo_n: int = int(_ctx_a.flags.get("combo_count", 0))
+	for _ci in range(combo_n):
+		if winner >= 0:
+			break
 		var dmg2 := 0
 		if _ctx_a.flags.get("pierce", false):
 			dmg2 = atk_value
@@ -447,32 +503,53 @@ func settle() -> Dictionary:
 			dmg2 = 0
 		else:
 			dmg2 = maxi(0, atk_value - def_value)
-		summary.dmg2 = dmg2
-		damage(D, dmg2, d, a)
+		summary.dmg2 += dmg2
+		summary.combo_n += 1
+		damage(D, dmg2, d, a, "combo")
 		if winner < 0:
 			_eval_on_damaged(D, d, A, a, dmg2)
 		if winner < 0 and _ctx_a.flags.get("leech", 0) > 0:
 			heal(A, int(dmg2 * _ctx_a.flags.leech / 100.0))
-	if winner < 0 and D.counter_round and def_value > atk_value:
+	# 洞穿无视一切防御（用户 2026-11-10 重申）：防御值不参与伤害，也不满足「防御值更大」的反击条件，
+	# 带洞穿的攻击不再触发对方反击
+	if winner < 0 and D.counter_round and def_value > atk_value and not summary.pierce:
 		summary.counter = def_value - atk_value
-		damage(A, summary.counter, a, d)
-	# 中毒同口径：一方 KO 后不再结算（含层数递减）
+		damage(A, summary.counter, a, d, "counter")
+	# 地球「攻击后：力量层数设置为本次攻击值的 50%/100%」在攻击结算（主伤害/连击/反击）之后、
+	# 中毒之前生效（用户裁决 2026-11-11：不得反过来抬升本次伤害；治愈同样在攻击结算后）。
+	# 之前放在 commit 里，strength_set 写入的新力量会被 settle 重算攻击值时吃进本次伤害。
+	if winner < 0:
+		_ctx_a.atk_value = atk_value   # 跃升/骇入可能已改点，按最终攻击值取百分比
+		for pas in A.cfg.passives:
+			if winner >= 0:
+				break
+			if pas.t == "attack_after" and eval_cond(pas.c, A, A.sel, _ctx_a):
+				for fx in pas.fx:
+					if winner >= 0:
+						break
+					apply_fx(fx, A, a, D, _ctx_a)
+	# 中毒同口径：一方 KO 后不再结算（含层数递减）；先结算方毒发致死后，
+	# 后结算方的中毒也不再扣血/减层（与荆棘循环的逐迭代 winner 守卫一致）
 	if winner < 0:
 		for i in range(players.size()):
 			var p: Dictionary = players[i]
-			if p.poison > 0:
-				damage(p, p.poison, i)
+			if winner < 0 and p.poison > 0:
+				damage(p, p.poison, i, -1, "poison")
 				p.poison -= 1
 	return summary
 
-# 「受到伤害」类被动：仅防御时、仅正式结算伤害（主伤害与连击第二击逐次判定），
+# 「受到伤害」类被动：仅防御时、仅正式结算伤害（主伤害与每段连击逐次判定），
 # 不含荆棘/中毒/反击/瞬伤等其他掉血（用户裁决 2026-10-13）
 func _eval_on_damaged(D: Dictionary, d: int, A: Dictionary, a: int, dmg: int) -> void:
 	for pas in D.cfg.passives:
+		if winner >= 0:
+			break
 		if pas.t == "on_damaged" and eval_cond(pas.c, D, D.sel, {"dmg": dmg}):
 			for fx in pas.fx:
+				if winner >= 0:
+					break
 				if fx.op == "instant":
-					damage(A, fx.n, a, d)
+					damage(A, fx.n, a, d, "instant")
 				else:
 					apply_fx(fx, D, d, A, {"flags": {}, "sel": D.sel, "values": [], "atk_value": 0, "bonus": 0})
 
