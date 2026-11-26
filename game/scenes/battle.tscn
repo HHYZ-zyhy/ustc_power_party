@@ -15,10 +15,11 @@ script = ExtResource("1")
 offset_left = 360.0
 offset_top = 16.0
 offset_right = 1560.0
-offset_bottom = 160.0
+offset_bottom = 244.0
 
 [node name="EnemyVBox" type="VBoxContainer" parent="EnemyBar"]
 layout_mode = 2
+theme_override_constants/separation = 6
 
 [node name="EnemyRow" type="HBoxContainer" parent="EnemyBar/EnemyVBox"]
 layout_mode = 2
@@ -47,32 +48,63 @@ show_percentage = false
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="EnemyStatus" type="RichTextLabel" parent="EnemyBar/EnemyVBox/EnemyRow"]
+[node name="EnemyInfo" type="VBoxContainer" parent="EnemyBar/EnemyVBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 0
+theme_override_constants/separation = 2
+
+[node name="EnemyPassive" type="RichTextLabel" parent="EnemyBar/EnemyVBox/EnemyInfo"]
 unique_name_in_owner = true
 layout_mode = 2
 bbcode_enabled = true
 fit_content = true
-theme_override_font_sizes/normal_font_size = 24
+theme_override_font_sizes/normal_font_size = 20
+
+[node name="EnemyStatus" type="RichTextLabel" parent="EnemyBar/EnemyVBox/EnemyInfo"]
+unique_name_in_owner = true
+layout_mode = 2
+bbcode_enabled = true
+fit_content = true
+theme_override_font_sizes/normal_font_size = 20
 theme_override_colors/default_color = Color(1, 0.82, 0.45, 1)
 
-[node name="EnemyPassive" type="RichTextLabel" parent="EnemyBar/EnemyVBox"]
+[node name="EnemyDiceBlock" type="VBoxContainer" parent="."]
+unique_name_in_owner = true
+offset_left = 380.0
+offset_top = 160.0
+offset_right = 1060.0
+offset_bottom = 318.0
+theme_override_constants/separation = 4
+
+[node name="EnemyDiceHead" type="HBoxContainer" parent="EnemyDiceBlock"]
 unique_name_in_owner = true
 layout_mode = 2
-bbcode_enabled = true
-fit_content = true
-theme_override_font_sizes/normal_font_size = 24
+theme_override_constants/separation = 8
 
-[node name="EnemyDice" type="HBoxContainer" parent="."]
+[node name="EnemyDiceLabel" type="Label" parent="EnemyDiceBlock/EnemyDiceHead"]
 unique_name_in_owner = true
-anchor_left = 0.5
-anchor_right = 0.5
-offset_left = -600.0
-offset_top = 172.0
-offset_right = 600.0
-offset_bottom = 242.0
-grow_horizontal = 2
-theme_override_constants/separation = 12
-alignment = 1
+custom_minimum_size = Vector2(0, 22)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.72, 0.76, 0.86, 1)
+theme_override_font_sizes/font_size = 16
+
+[node name="EnemyDiceTotal" type="Label" parent="EnemyDiceBlock/EnemyDiceHead"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(0, 22)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.72, 0.76, 0.86, 1)
+theme_override_font_sizes/font_size = 16
+horizontal_alignment = 2
+
+[node name="EnemyDice" type="GridContainer" parent="EnemyDiceBlock"]
+unique_name_in_owner = true
+layout_mode = 2
+columns = 5
+theme_override_constants/h_separation = 6
+theme_override_constants/v_separation = 4
 
 [node name="Banner" type="Label" parent="."]
 unique_name_in_owner = true
@@ -118,6 +150,19 @@ offset_right = 260.0
 offset_bottom = 540.0
 theme_override_font_sizes/font_size = 32
 
+[node name="DiceTip" type="Label" parent="."]
+unique_name_in_owner = true
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -560.0
+offset_top = 664.0
+offset_right = 560.0
+offset_bottom = 692.0
+grow_horizontal = 2
+horizontal_alignment = 1
+theme_override_colors/font_color = Color(0.72, 0.76, 0.86, 1)
+theme_override_font_sizes/font_size = 20
+
 [node name="DiceRow" type="HBoxContainer" parent="."]
 unique_name_in_owner = true
 anchor_left = 0.5
@@ -125,9 +170,9 @@ anchor_right = 0.5
 offset_left = -700.0
 offset_top = 720.0
 offset_right = 700.0
-offset_bottom = 840.0
+offset_bottom = 870.0
 grow_horizontal = 2
-theme_override_constants/separation = 10
+theme_override_constants/separation = 16
 alignment = 1
 
 [node name="RollView" type="SubViewportContainer" parent="."]
@@ -156,9 +201,9 @@ unique_name_in_owner = true
 anchor_left = 0.5
 anchor_right = 0.5
 offset_left = -560.0
-offset_top = 856.0
+offset_top = 872.0
 offset_right = 560.0
-offset_bottom = 924.0
+offset_bottom = 910.0
 grow_horizontal = 2
 horizontal_alignment = 1
 theme_override_font_sizes/font_size = 24
@@ -166,7 +211,7 @@ autowrap_mode = 3
 
 [node name="PlayerBar" type="PanelContainer" parent="."]
 offset_left = 360.0
-offset_top = 936.0
+offset_top = 910.0
 offset_right = 1560.0
 offset_bottom = 1064.0
 
@@ -200,20 +245,20 @@ show_percentage = false
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="PlayerStatus" type="RichTextLabel" parent="PlayerBar/PlayerVBox/PlayerRow"]
-unique_name_in_owner = true
-layout_mode = 2
-bbcode_enabled = true
-fit_content = true
-theme_override_font_sizes/normal_font_size = 24
-theme_override_colors/default_color = Color(1, 0.82, 0.45, 1)
-
 [node name="PlayerPassive" type="RichTextLabel" parent="PlayerBar/PlayerVBox"]
 unique_name_in_owner = true
 layout_mode = 2
 bbcode_enabled = true
 fit_content = true
-theme_override_font_sizes/normal_font_size = 24
+theme_override_font_sizes/normal_font_size = 22
+
+[node name="PlayerStatus" type="RichTextLabel" parent="PlayerBar/PlayerVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+bbcode_enabled = true
+fit_content = true
+theme_override_font_sizes/normal_font_size = 22
+theme_override_colors/default_color = Color(1, 0.82, 0.45, 1)
 
 [node name="BtnColumn" type="VBoxContainer" parent="."]
 anchor_left = 1.0
@@ -245,6 +290,17 @@ unique_name_in_owner = true
 layout_mode = 2
 custom_minimum_size = Vector2(260, 120)
 text = "确认选骰"
+
+[node name="YcDim" type="ColorRect" parent="."]
+unique_name_in_owner = true
+visible = false
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0, 0, 0, 0.45)
+mouse_filter = 0
 
 [node name="YcPopup" type="PanelContainer" parent="."]
 unique_name_in_owner = true
@@ -312,6 +368,14 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+
+[node name="Dim" type="ColorRect" parent="SummaryView"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0, 0, 0, 0.65)
 
 [node name="SumPanel" type="PanelContainer" parent="SummaryView"]
 unique_name_in_owner = true

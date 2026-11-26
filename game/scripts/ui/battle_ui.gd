@@ -2,8 +2,6 @@ extends Control
 
 # 战斗界面：人类 = 玩家0，AI = 玩家1；异步编排 Battle 的分步 API
 
-signal phase_confirmed
-
 var battle: Battle
 var rng: GameRng
 var ai: AIController
@@ -13,6 +11,10 @@ var _sel: Array = []
 var _need: int = 0
 var _en_rolled: bool = false
 var _en_committed: bool = false
+var _phase_done: bool = false   # 人类阶段是否已成功确认（_on_confirm 置 true）
+var _roll_done: bool = false    # 当前投骰演出是否已收到 finished（看门狗用）
+var _roll_cb: Callable         # 当前投骰的 finished 回调（超时/重入时断开，防串台）
+var _leaving: bool = false      # 防止总结页重复切场景
 
 @onready var enemy_name: Label = %EnemyName
 @onready var enemy_hp: Label = %EnemyHp
@@ -20,7 +22,13 @@ var _en_committed: bool = false
 @onready var enemy_yc: Label = %EnemyYc
 @onready var enemy_status: RichTextLabel = %EnemyStatus
 @onready var enemy_passive: RichTextLabel = %EnemyPassive
-@onready var enemy_dice: HBoxContainer = %EnemyDice
+@onready var enemy_dice: GridContainer = %EnemyDice
+@onready var enemy_dice_label: Label = %EnemyDiceLabel
+@onready var enemy_dice_block: VBoxContainer = %EnemyDiceBlock
+@onready var enemy_dice_head: HBoxContainer = %EnemyDiceHead
+@onready var enemy_dice_total: Label = %EnemyDiceTotal
+@onready var enemy_bar: PanelContainer = $EnemyBar
+@onready var player_bar: PanelContainer = $PlayerBar
 @onready var banner: Label = %Banner
 @onready var big: Label = %Big
 @onready var info_label: RichTextLabel = %InfoLabel
@@ -31,11 +39,13 @@ var _en_committed: bool = false
 @onready var player_yc: Label = %PlayerYc
 @onready var player_status: RichTextLabel = %PlayerStatus
 @onready var dice_row: HBoxContainer = %DiceRow
+@onready var dice_tip: Label = %DiceTip
 @onready var btn_yc: Button = %BtnYc
 @onready var btn_reroll: Button = %BtnReroll
 @onready var btn_confirm: Button = %BtnConfirm
 @onready var log_line: Label = %LogLine
 @onready var round_label: Label = %RoundLabel
+@onready var yc_dim: ColorRect = %YcDim
 @onready var yc_popup: PanelContainer = %YcPopup
 @onready var yc_title: Label = %YcTitle
 @onready var yc_intro: RichTextLabel = %YcIntro
@@ -54,28 +64,44 @@ var glossary: GlossaryPanel
 var _badge_atk := {}   # idx -> Label：攻等级徽章（被动改等级后需随 refresh 更新）
 var _badge_def := {}   # idx -> Label：防等级徽章
 var _hit_seen: int = 0 # battle.hits 已消费到的位置（每次掉血只飘一次字/闪一次红）
+var _die_views := {}   # Die -> DieView：玩家候选行池化，避免每次 refresh 重建 SubViewport
+var _enemy_views := {} # Die -> DieView：敌方骰块（信息条框外）缩小行池化
+var _primary: ButtonStyles
 
 func _ready() -> void:
 	rng = GameRng.new()
 	ai = AIController.new()
 	battle = Battle.new()
-	# 直接运行 battle.tscn 调试时没有选卡结果：回退到默认组合（正常流程由 select_ui 写入）
-	if GameStateData.char_id == "":
-		GameStateData.char_id = "physics"
-		GameStateData.yc_name = "网络渗透"
+	# 直接运行 battle.tscn 调试时没有选卡结果：统一校验/回退（非法角色→physics，非法曜彩→推荐）
+	GameStateData.sanitize()
 	var ids: Array = GameData.CHARACTERS.keys()
+	if ids.is_empty():
+		_fail_to_select("战斗初始化失败：角色数据为空，正在返回选卡")
+		return
 	var others: Array = ids.duplicate()
 	others.erase(GameStateData.char_id)
-	var ai_id: String = others[rng.randi_range(0, others.size() - 1)]
+	# 只有一个角色时允许镜像对局，避免 randi_range(0, -1) 越界
+	var ai_id: String = GameStateData.char_id
+	if not others.is_empty():
+		ai_id = str(others[rng.randi_range(0, others.size() - 1)])
 	var ai_cfg: Dictionary = GameData.CHARACTERS[ai_id]
 	var yc_keys: Array = GameData.YAOCAI.keys()
-	var ai_yc: String = "" if ai_cfg.yc == 0 else yc_keys[rng.randi_range(0, yc_keys.size() - 1)]
-	battle.setup([GameStateData.char_id, ai_id], [GameStateData.yc_name, ai_yc], rng)
+	var ai_yc: String = ""
+	if int(ai_cfg.yc) > 0 and not yc_keys.is_empty():
+		ai_yc = str(yc_keys[rng.randi_range(0, yc_keys.size() - 1)])
+	if not battle.setup([GameStateData.char_id, ai_id], [GameStateData.yc_name, ai_yc], rng):
+		_fail_to_select("战斗初始化失败：角色/曜彩配置非法，正在返回选卡")
+		return
+	_hit_seen = 0
 	btn_yc.pressed.connect(_on_yc)
 	btn_reroll.pressed.connect(_on_reroll)
 	btn_confirm.pressed.connect(_on_confirm)
 	yc_use_btn.pressed.connect(_on_yc_use)
 	yc_close_btn.pressed.connect(_on_yc_close)
+	yc_dim.gui_input.connect(func(ev: InputEvent) -> void:
+		if ev is InputEventMouseButton and ev.pressed \
+				and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			_hide_yc_popup())
 	glossary = GlossaryPanel.new()
 	add_child(glossary)
 	for r in [info_label, enemy_status, player_status, enemy_passive, player_passive, yc_intro, sum_stats]:
@@ -83,6 +109,12 @@ func _ready() -> void:
 	roller = get_node("RollView/SubViewport/DiceRoll")
 	_style_hp_bar(enemy_hp_bar)
 	_style_hp_bar(player_hp_bar)
+	_pad_info_bar(enemy_bar)
+	_pad_info_bar(player_bar)
+	_primary = ButtonStyles.new()
+	_primary.apply_primary(sum_btn, true)
+	sum_stats.add_theme_constant_override("table_h_separation", 28)
+	sum_stats.add_theme_constant_override("table_v_separation", 6)
 	get_viewport().size_changed.connect(func() -> void:
 		_fit_yc_popup()
 		_fit_sum_panel())
@@ -90,6 +122,19 @@ func _ready() -> void:
 	_fit_sum_panel()
 	_refresh_static()
 	_run()
+
+# 初始化失败（角色表为空/Battle.setup 拒绝）：不能停在无响应的战斗界面；
+# 先显示原因，下一帧回选卡页（_ready 内直接切场景会释放当前节点，故延迟一帧）
+func _fail_to_select(msg: String) -> void:
+	push_error("battle_ui: " + msg)
+	banner.text = msg
+	big.text = ""
+	await get_tree().process_frame
+	if not is_inside_tree():
+		return
+	var err: int = get_tree().change_scene_to_file("res://scenes/select.tscn")
+	if err != OK:
+		banner.text = "返回选卡失败（错误码 %d）" % err
 
 func _style_hp_bar(bar: ProgressBar) -> void:
 	bar.show_percentage = false
@@ -104,8 +149,27 @@ func _style_hp_bar(bar: ProgressBar) -> void:
 	fill.set_corner_radius_all(6)
 	bar.add_theme_stylebox_override("fill", fill)
 
-func _wait(sec: float) -> void:
-	await get_tree().create_timer(sec).timeout
+# 信息栏复制主题 panel 样式后加内边距，保留原有底色/圆角；
+# 同时裁切内容，避免将来更长的名字/文案越出黑色面板压到右侧按钮列
+func _pad_info_bar(bar: PanelContainer) -> void:
+	var sb: StyleBox = bar.get_theme_stylebox("panel").duplicate()
+	sb.content_margin_left = INFO_PAD_X
+	sb.content_margin_right = INFO_PAD_X
+	sb.content_margin_top = INFO_PAD_Y
+	sb.content_margin_bottom = INFO_PAD_Y
+	bar.add_theme_stylebox_override("panel", sb)
+	bar.clip_contents = true
+
+# 帧驱动等待：不用 SceneTreeTimer（场景释放后它仍会 timeout，协程可能在已释放节点上恢复）。
+# get_process_delta_time() 受 Engine.time_scale 影响，ui_stress 的 time_scale=10 仍能快进。
+func _wait(sec: float) -> bool:
+	var elapsed := 0.0
+	while elapsed < sec:
+		if not is_inside_tree():
+			return false
+		await get_tree().process_frame
+		elapsed += get_process_delta_time()
+	return is_inside_tree()
 
 func _fx_list_text(fx_arr: Array) -> String:
 	var parts: Array = []
@@ -115,16 +179,14 @@ func _fx_list_text(fx_arr: Array) -> String:
 
 func _fx_text(fx: Dictionary) -> String:
 	match fx.op:
-		"combo": return "连击"
-		"pierce": return "洞穿"
+		# 无参数效果与战绩统计共用同一套中文名，避免两份文案漂移
+		"combo", "pierce", "hack", "field", "unyielding", "unyielding_once", "counter", "mingding":
+			return _fx_name(fx.op)
 		"atk_add": return "攻击值+%d" % fx.n
 		"upgrade_sel": return "升级所选骰"
-		"hack": return "骇入"
 		"instant": return "瞬伤%d" % fx.n
 		"instant_per_pair": return "每对瞬伤%d" % fx.n
 		"thorns": return "荆棘%d" % fx.n
-		"field": return "力场"
-		"unyielding", "unyielding_once": return "不屈"
 		"heal_same": return "治愈（同点数）"
 		"heal": return "治愈%d" % fx.n
 		"strength": return "力量%d" % fx.n
@@ -135,8 +197,6 @@ func _fx_text(fx: Dictionary) -> String:
 		"atk_level_add": return "攻击等级+%d" % fx.n
 		"def_level_add": return "防御等级+%d" % fx.n
 		"atk_level_set": return "攻击等级=%d" % fx.n
-		"counter": return "反击"
-		"mingding": return "命定"
 	return fx.op
 
 const BADGE_ATK_BG := Color(0.82, 0.32, 0.22)
@@ -151,40 +211,16 @@ const YC_POPUP_BASE := Vector2(580, 500)
 const YC_POPUP_MARGIN := 40.0
 const YC_POPUP_TOP := 100.0
 const SUM_PANEL_BASE := Vector2(1040, 520)
-
-# 骰型配色（用户指定，与 3D 演出同色系）：4 天蓝 / 6 紫 / 8 橙 / 12 与曜彩近黑+蓝紫点缀
-const TIER_BG := {4: Color(0.451, 0.910, 0.988), 6: Color(0.765, 0.365, 0.969), 8: Color(0.969, 0.812, 0.682), 12: Color(0.10, 0.10, 0.15)}
-const TIER_ACCENT := {4: Color(0.20, 0.78, 0.95), 6: Color(0.58, 0.25, 0.90), 8: Color(0.92, 0.62, 0.35), 12: Color(0.55, 0.45, 0.95)}
-const DARK_DIE_BG := Color(0.10, 0.10, 0.15)
-const DARK_DIE_ACCENT := Color(0.55, 0.45, 0.95)
-const SEL_BORDER := Color(1.0, 0.85, 0.3)
-const LOCK_BORDER := Color(1.0, 0.45, 0.75)
-
-func _die_colors(d: Die) -> Dictionary:
-	if d.is_yaocai():
-		return {"bg": DARK_DIE_BG, "accent": DARK_DIE_ACCENT, "font": Color(0.85, 0.80, 1.0)}
-	if d.sides == 12:
-		return {"bg": DARK_DIE_BG, "accent": DARK_DIE_ACCENT, "font": Color(0.85, 0.80, 1.0)}
-	return {"bg": TIER_BG[d.sides], "accent": TIER_ACCENT[d.sides], "font": Color(0.10, 0.12, 0.18)}
-
-func _style_die_button(b: Button, d: Die, selected: bool, locked: bool) -> void:
-	var c := _die_colors(d)
-	for state in ["normal", "hover", "pressed", "disabled"]:
-		var sb := StyleBoxFlat.new()
-		sb.bg_color = c.bg if state != "disabled" else c.bg.darkened(0.45)
-		if selected:
-			sb.border_color = SEL_BORDER
-		elif locked:
-			sb.border_color = LOCK_BORDER
-		else:
-			sb.border_color = c.accent
-		sb.set_border_width_all(4 if (selected or locked) else 2)
-		sb.set_corner_radius_all(10)
-		b.add_theme_stylebox_override(state, sb)
-	var font_col: Color = c.font
-	for fc in ["font_color", "font_color_hover", "font_color_pressed"]:
-		b.add_theme_color_override(fc, font_col)
-	b.add_theme_color_override("font_color_disabled", Color(0.55, 0.55, 0.60))
+const SUM_PANEL_MIN_H := 300.0
+# 信息栏文字与深色面板边缘的呼吸空间（默认 panel 样式 content margin 为 0，文字贴边）
+const INFO_PAD_X := 20.0
+const INFO_PAD_Y := 8.0
+# 敌方骰块在信息条框外、名字正下方：信息条只按名字/被动/状态内容收紧，不再为骰块预留高度
+const ENEMY_BAR_EMPTY_MIN := 120.0
+const ENEMY_BAR_FIT_PAD := 4.0
+const ENEMY_DICE_GAP := 4.0
+# 骰块每行最多 5 颗：5 颗仍不越过居中横幅文字，第 6 颗（曜彩骰）自动换第二行
+const ENEMY_DICE_COLS := 5
 
 func _make_badge(txt: String, bg: Color, tip: String) -> PanelContainer:
 	var panel := PanelContainer.new()
@@ -212,10 +248,7 @@ func _atk_badge_text(p: Dictionary) -> String:
 
 func _def_level_shown(p: Dictionary) -> int:
 	# 防御等级徽章 = def_eff + 网安「下次防御+3」类 def_pending，按普通骰数封顶（与 selection_count 口径一致）
-	var pool_n := 0
-	for k in p.cfg.pool:
-		pool_n += p.cfg.pool[k]
-	return mini(battle.def_eff(p) + p.def_pending, pool_n)
+	return mini(battle.def_eff(p) + p.def_pending, Battle.pool_count(p))
 
 func _add_stat_badges(row: Node, p: Dictionary, idx: int) -> void:
 	var atk_b := _make_badge("攻 %s" % _atk_badge_text(p), BADGE_ATK_BG, "攻击等级：进攻时需选定的骰子数")
@@ -276,118 +309,226 @@ func refresh() -> void:
 		info_label.text = ""
 	var en_dice: Array = []
 	if _en_committed:
-		en_dice = en.sel.duplicate()
+		# 回合收尾会移除曜彩骰，但 en.sel 要到下回合 round_open 才清空；
+		# 只展示仍在骰池里的实体，避免「总计」把已消失的骰子算进去
+		for d in en.sel:
+			if en.dice.has(d):
+				en_dice.append(d)
 		en_dice.sort_custom(_die_less)
 	elif _en_rolled or battle.round > 1:
 		# 守方本回合尚未重投时，显示其上回合投出的骰子（同原作；第 1 回合无历史）
 		en_dice = en.dice.duplicate()
 		en_dice.sort_custom(_die_less)
-	for c in enemy_dice.get_children():
-		c.queue_free()
-	for d in en_dice:
-		var l := Label.new()
-		l.text = _die_text(d)
-		l.add_theme_font_size_override("font_size", 30)
-		l.add_theme_color_override("font_color", _die_colors(d).accent)
-		enemy_dice.add_child(l)
-	if _en_committed and en_dice.size() > 0:
-		var sum := 0
-		for d in en_dice:
-			sum += d.value
-		var total := Label.new()
-		total.text = "总计 %d" % sum
-		total.add_theme_font_size_override("font_size", 34)
-		total.add_theme_color_override("font_color", Color(0.72, 0.76, 0.86))
-		enemy_dice.add_child(total)
+	_sync_enemy_row(en, en_dice)
 	var my_dice: Array = me.dice.duplicate()
 	my_dice.sort_custom(_die_less)
 	var fx_hints: Dictionary = _die_fx_hints(me, _need) if _human_active else {}
-	for c in dice_row.get_children():
-		c.queue_free()
-	for d in my_dice:
-		var b := Button.new()
-		var locked := _is_mingding(d)
-		if locked:
-			b.text = "命定·%s\n%d" % [d.yaocai, d.value]
-			b.add_theme_font_size_override("font_size", 26)
-		elif d.is_yaocai():
-			b.text = _die_text(d)
-			b.add_theme_font_size_override("font_size", 26)
-		else:
-			b.text = _die_text(d)
-		b.custom_minimum_size = Vector2(104, 88)
-		if d.is_yaocai() and not locked:
-			var fx_arr: Array = GameData.YAOCAI[d.yaocai].faces[d.face].fx
-			var fx_lbl := RichTextLabel.new()
-			fx_lbl.bbcode_enabled = true
-			fx_lbl.text = (GlossaryPanel.kw_bbcode(_fx_list_text(fx_arr) if fx_arr.size() > 0 else "无效果"))
-			fx_lbl.add_theme_font_size_override("normal_font_size", 13)
-			fx_lbl.add_theme_color_override("default_color",
-				Color(1.0, 0.85, 0.4) if fx_arr.size() > 0 else Color(0.62, 0.62, 0.62))
-			fx_lbl.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-			fx_lbl.offset_top = -22.0
-			fx_lbl.offset_bottom = -4.0
-			fx_lbl.meta_clicked.connect(_on_kw_meta)
-			b.add_child(fx_lbl)
-		elif fx_hints.has(d):
-			var hint := RichTextLabel.new()
-			hint.bbcode_enabled = true
-			hint.text = (GlossaryPanel.kw_bbcode("、".join(fx_hints[d])))
-			hint.add_theme_font_size_override("normal_font_size", 14)
-			hint.add_theme_color_override("default_color", Color(1.0, 0.85, 0.4))
-			hint.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-			hint.offset_top = 4.0
-			hint.offset_bottom = 26.0
-			hint.meta_clicked.connect(_on_kw_meta)
-			b.add_child(hint)
-		if locked:
-			_style_die_button(b, d, false, true)
-		elif _sel.has(d):
-			_style_die_button(b, d, true, false)
-		else:
-			_style_die_button(b, d, false, false)
-		b.disabled = not _human_active or locked
-		b.pressed.connect(_on_die.bind(d))
-		dice_row.add_child(b)
+	_sync_dice_row(my_dice, fx_hints)
 	var has_yc: bool = battle.players[0].yc_name != ""
 	btn_yc.disabled = not _human_active or not has_yc
 	if not has_yc:
 		btn_yc.text = "无曜彩骰"
 	elif not _human_active:
-		btn_yc.text = "曜彩「%s」\n剩%d次" % [battle.players[0].yc_name, battle.players[0].yc_uses]
+		btn_yc.text = "曜彩 %s\n剩%d次" % [battle.players[0].yc_name, battle.players[0].yc_uses]
 	else:
 		var reason: String = battle.yaocai_reason(0, _phase)
 		if reason == "":
-			btn_yc.text = "曜彩「%s」\n剩%d次·可用" % [battle.players[0].yc_name, battle.players[0].yc_uses]
+			btn_yc.text = "曜彩 %s\n剩%d次·可用" % [battle.players[0].yc_name, battle.players[0].yc_uses]
 		else:
-			btn_yc.text = "曜彩「%s」\n%s" % [battle.players[0].yc_name, reason]
+			btn_yc.text = "曜彩 %s\n%s" % [battle.players[0].yc_name, reason]
 	if not _human_active or not has_yc:
-		yc_popup.visible = false
-	if _phase == "attack":
-		btn_reroll.text = "重投所选%d颗（剩%d次）" % [_sel.size(), battle.rerolls_left(0)]
-		btn_reroll.disabled = not (_human_active and battle.rerolls_left(0) > 0 and _sel.size() >= 1)
-	else:
-		btn_reroll.text = "重投（防守方剩0次）"
+		_hide_yc_popup()
+	if not _human_active:
+		btn_reroll.text = "重投"
 		btn_reroll.disabled = true
-	if _need > 0:
+	elif _phase == "attack":
+		btn_reroll.text = "重投所选%d颗\n（剩%d次）" % [_sel.size(), battle.rerolls_left(0)]
+		btn_reroll.disabled = not (battle.rerolls_left(0) > 0 and _sel.size() >= 1)
+	else:
+		btn_reroll.text = "重投\n防守方剩0次"
+		btn_reroll.disabled = true
+	if not _human_active:
+		btn_confirm.text = "确认选骰"
+	elif _need > 0:
 		btn_confirm.text = "确认选骰 %d/%d" % [_sel.size(), _need]
 	else:
 		btn_confirm.text = "确认选骰 %d/任意" % _sel.size()
-	btn_confirm.disabled = not _human_active
+	# 选够才能确认：按钮直接置灰，比点了以后再报错更直观
+	var sel_ok: bool = (_sel.size() == _need) if _need > 0 else (_sel.size() >= 1)
+	btn_confirm.disabled = not _human_active or not sel_ok
+	_primary.apply_primary(btn_confirm, not btn_confirm.disabled)
+	if _human_active and not sel_ok:
+		btn_confirm.tooltip_text = ("需选 %d 颗" % _need) if _need > 0 else "至少选 1 颗"
+	else:
+		btn_confirm.tooltip_text = ""
+	_update_dice_tip()
 	if battle.log.size() > 0:
 		log_line.text = _log_text(battle.log[battle.log.size() - 1])
 	_flush_hits()
 
+# 候选骰上方的操作提示：明确「3D 骰可直接点」，并实时显示已选/需选数量
+func _update_dice_tip() -> void:
+	if not _human_active:
+		dice_tip.text = ""
+		dice_tip.add_theme_color_override("font_color", Color(0.72, 0.74, 0.80))
+		return
+	var need_txt: String = ("需选 %d 颗" % _need) if _need > 0 else "任意数量，至少 1 颗"
+	var sel_ok: bool = (_sel.size() == _need) if _need > 0 else (_sel.size() >= 1)
+	dice_tip.text = "点击骰子选择/取消 · 已选 %d 颗（%s）%s" % [
+		_sel.size(), need_txt, "· 可以确认" if sel_ok else ""]
+	dice_tip.add_theme_color_override("font_color",
+		Color(1.0, 0.85, 0.3) if sel_ok else Color(0.72, 0.74, 0.80))
+
+# 按 Die 对象池化 DieView：玩家候选行与敌方行共用创建/复用逻辑，避免两处各写一份
+func _obtain_view(cache: Dictionary, parent: Node, d: Die, enemy: bool) -> DieView:
+	var v: DieView = cache.get(d)
+	if v == null:
+		v = DieView.new()
+		cache[d] = v
+		parent.add_child(v)
+		if enemy:
+			v.setup_enemy(d)
+		else:
+			v.setup(d)
+			v.die_pressed.connect(_on_die)
+		v.keyword_clicked.connect(_on_kw_meta)
+	else:
+		v.set_die(d)
+	return v
+
+func _prune_views(cache: Dictionary, parent: Node, live: Dictionary) -> void:
+	for d in cache.keys().duplicate():
+		if not live.has(d):
+			var v: DieView = cache[d]
+			cache.erase(d)
+			parent.remove_child(v)
+			v.queue_free()
+
+# 玩家候选骰行：按 Die 对象池化 DieView，refresh 只更新点数/面/选中/锁定/提示，
+# 不重建 SubViewport（每次点选都重建 World3D 会掉帧并闪烁）
+func _sync_dice_row(my_dice: Array, fx_hints: Dictionary) -> void:
+	var live := {}
+	for i in range(my_dice.size()):
+		var d: Die = my_dice[i]
+		live[d] = true
+		var v: DieView = _obtain_view(_die_views, dice_row, d, false)
+		var locked: bool = _is_mingding(d)
+		v.set_locked(locked)
+		v.set_selected(_sel.has(d))
+		v.set_interactive(_human_active and not locked)
+		v.set_dimmed(not _human_active)
+		v.set_hint(_dice_hint_bbcode(d, fx_hints))
+		v.set_tooltip(_die_text(d))
+		dice_row.move_child(v, i)
+	_prune_views(_die_views, dice_row, live)
+
+# 敌方骰块（信息条框外、名字正下方；玩家候选行的缩小版，不可点击）：p.dice 全部保留视图，
+# 只显示本回合应展示的骰子（已提交=所选；否则=上回合/本回合投出）
+func _sync_enemy_row(en: Dictionary, shown: Array) -> void:
+	var shown_set := {}
+	for d in shown:
+		shown_set[d] = true
+	var live := {}
+	var all_dice: Array = en.dice
+	for d in all_dice:
+		live[d] = true
+		var v: DieView = _obtain_view(_enemy_views, enemy_dice, d, true)
+		v.set_interactive(false)
+		v.set_dimmed(false)
+		v.set_selected(false)
+		v.set_locked(false)
+		v.set_hint(_dice_hint_bbcode(d, {}))
+		v.set_tooltip(_die_text(d))
+	_prune_views(_enemy_views, enemy_dice, live)
+	var pos := 0
+	for d in shown:
+		var v: DieView = _enemy_views.get(d)
+		if v != null:
+			enemy_dice.move_child(v, pos)
+			if not v.visible:
+				v.visible = true
+				v.arm_render()   # 隐藏期间没有渲染，重新显示时补一帧
+			pos += 1
+	for d in all_dice:
+		if not shown_set.has(d):
+			var v: DieView = _enemy_views.get(d)
+			if v != null:
+				enemy_dice.move_child(v, pos)
+				v.visible = false
+				pos += 1
+	if _en_committed and shown.size() > 0:
+		enemy_dice_total.text = "总计 %d" % Battle.dice_sum(shown)
+		enemy_dice_total.visible = true
+	else:
+		enemy_dice_total.visible = false
+	# 敌方骰块来源提示：本回合已提交 / 上回合残留 / 本回合已投
+	if shown.is_empty():
+		enemy_dice_label.text = ""
+	elif _en_committed:
+		enemy_dice_label.text = "敌方所选"
+	elif not _en_rolled and battle.round > 1:
+		enemy_dice_label.text = "敌方上回合"
+	else:
+		enemy_dice_label.text = "敌方骰子"
+	# 信息条只按内容收紧（名字/HP 行 + 被动/状态），骰块移到框外、与名字左对齐
+	var fit_h: float = enemy_bar.get_combined_minimum_size().y + ENEMY_BAR_FIT_PAD
+	var bar_bottom: float = enemy_bar.offset_top + maxf(ENEMY_BAR_EMPTY_MIN, fit_h)
+	enemy_bar.offset_bottom = bar_bottom
+	# 骰块：框外名字正下方，最多 5 列；第 6 颗（曜彩骰）换第二行，块宽不越过居中横幅文字
+	var n: int = shown.size()
+	enemy_dice_label.visible = n > 0
+	var h_sep: float = float(enemy_dice.get_theme_constant("h_separation"))
+	var v_sep: float = float(enemy_dice.get_theme_constant("v_separation"))
+	var rows: int = 0 if n == 0 else int(ceil(float(n) / float(ENEMY_DICE_COLS)))
+	var full_cols: int = mini(n, ENEMY_DICE_COLS)
+	var grid_w: float = float(full_cols) * DieView.ENEMY_SIZE.x + float(maxi(0, full_cols - 1)) * h_sep
+	var head_min: Vector2 = enemy_dice_head.get_combined_minimum_size()
+	var block_w: float = maxf(grid_w, head_min.x)
+	var block_h: float = head_min.y + float(enemy_dice_block.get_theme_constant("separation")) \
+		+ float(rows) * DieView.ENEMY_SIZE.y + float(maxi(0, rows - 1)) * v_sep
+	enemy_dice_block.visible = n > 0
+	if n > 0:
+		enemy_dice_block.offset_left = enemy_bar.offset_left + INFO_PAD_X
+		enemy_dice_block.offset_right = enemy_dice_block.offset_left + clampf(block_w, DieView.ENEMY_SIZE.x, 680.0)
+		enemy_dice_block.offset_top = bar_bottom + ENEMY_DICE_GAP
+		enemy_dice_block.offset_bottom = enemy_dice_block.offset_top + block_h
+
+# 骰子下方提示：类型/曜彩名用灰紫小字，效果词沿用效果显示的金色可点击链接
+func _dice_hint_bbcode(d: Die, fx_hints: Dictionary) -> String:
+	if d.is_yaocai():
+		var faces: Array = GameData.YAOCAI[d.yaocai].faces
+		var fi: int = clampi(d.face, 0, faces.size() - 1)
+		var fx_arr: Array = faces[fi].fx
+		var head := "[color=#cabaff]%s[/color]" % d.yaocai
+		if fx_arr.is_empty():
+			return "%s · [color=#aab0c0]无效果[/color]" % head
+		return "%s · %s" % [head, GlossaryPanel.kw_bbcode(_fx_list_text(fx_arr))]
+	var head := "[color=#b6bccb]%s[/color]" % _die_head(d)
+	if fx_hints.has(d) and not (fx_hints[d] as Array).is_empty():
+		return "%s · %s" % [head, GlossaryPanel.kw_bbcode("、".join(fx_hints[d]))]
+	return head
+
+# 演出期间锁骰：不改 _sel，只禁用点击并把骰子调暗（不重建视图）
+func _set_dice_input(on: bool) -> void:
+	for d in _die_views:
+		var v: DieView = _die_views[d]
+		v.set_interactive(on and not _is_mingding(d))
+		v.set_dimmed(not on)
+
+func _arm_views(cache: Dictionary) -> void:
+	for v in cache.values():
+		(v as DieView).arm_render()
+
 func _log_text(s: String) -> String:
+	var out: String = s
 	if s.begins_with("KO: player"):
-		return "%s 被击倒！" % battle.players[int(s.right(1))].cfg.name
-	if s.begins_with("yc roll p"):
+		out = "%s 被击倒！" % battle.players[int(s.right(1))].cfg.name
+	elif s.begins_with("yc roll p"):
 		# 日志格式 "yc roll p<idx> <曜彩名> face<N>=<V>"（p0=人类），按序号归属，
 		# 避免旧实现用名字 find 匹配在「人类无曜彩/双方同名曜彩」时误判
-		return "%s投出了曜彩骰" % ("你" if s.get_slice(" ", 2) == "p0" else "敌方")
-	return s
-
-const SIDES_TEXT := {4: "四面", 6: "六面", 8: "八面", 12: "十二面"}
+		out = "%s投出了曜彩骰" % ("你" if s.get_slice(" ", 2) == "p0" else "敌方")
+	# 单独一行居中显示，加前缀避免被误认成骰行标签
+	return "战报｜" + out
 
 # 本回合待结算/生效中的状态（荆棘在结算开始才扣血，故需在信息条预告）
 func _status_text(p: Dictionary) -> String:
@@ -401,28 +542,28 @@ func _status_text(p: Dictionary) -> String:
 	if p.poison > 0:
 		parts.append("中毒%d" % p.poison)
 	if p.strength.size() > 0:
-		var total := 0
-		for e in p.strength:
-			total += e.n
 		var tag: String = "（下回合）" if p.strength[0].expire == battle.round + 1 else ""
-		parts.append("力量%d%s" % [total, tag])
+		parts.append("力量%d%s" % [battle.strength_total(p), tag])
 	if p.leap_round:
 		parts.append("跃升")
 	return "、".join(parts)
+
+# 当前阶段生效的被动：攻击后（attack_after）只在攻击阶段的预览/提示里展示
+func _phase_passives(p: Dictionary) -> Array:
+	var out: Array = []
+	for pas in p.cfg.passives:
+		if pas.t == _phase or (_phase == "attack" and pas.t == "attack_after"):
+			out.append(pas)
+	return out
 
 # 选骰效果预览：已选组合触发的效果（金色，InfoLabel 汇总行）
 func _refresh_preview() -> void:
 	var p: Dictionary = battle.players[0]
 	var triggered: Array = []
-	var sum := 0
-	for d in _sel:
-		sum += d.value
 	# 预期效果按实际攻击值判定（含已有力量层数；网安「攻击值≥19」等条件在选骰时就要看准）
-	var ctx := {"flags": {}, "sel": _sel, "values": [], "atk_value": sum + battle.strength_total(p), "bonus": 0, "face_points": 0}
-	for pas in p.cfg.passives:
-		if pas.t != _phase and not (_phase == "attack" and pas.t == "attack_after"):
-			continue
-		if battle.eval_cond(pas.c, p, _sel, ctx):
+	var ctx := {"flags": {}, "sel": _sel, "values": [], "atk_value": Battle.dice_sum(_sel) + battle.strength_total(p), "bonus": 0, "face_points": 0}
+	for pas in _phase_passives(p):
+		if Battle.eval_cond(pas.c, p, _sel, ctx):
 			for fx in pas.fx:
 				_push_preview_fx(triggered, fx)
 	for d in _sel:
@@ -430,94 +571,89 @@ func _refresh_preview() -> void:
 			for fx in GameData.YAOCAI[d.yaocai].faces[d.face].fx:
 				_push_preview_fx(triggered, fx)
 	if triggered.size() > 0:
-		info_label.text = (GlossaryPanel.kw_bbcode("预期效果：%s" % "、".join(triggered)))
+		info_label.text = "[center]%s[/center]" % GlossaryPanel.kw_bbcode("预期效果：%s" % "、".join(triggered))
 		info_label.add_theme_color_override("default_color", Color(1.0, 0.84, 0.42))
 	else:
-		info_label.text = "预期效果：无"
+		info_label.text = "[center]预期效果：无[/center]"
 		info_label.add_theme_color_override("default_color", Color(0.62, 0.66, 0.72))
 
 # 预期效果入列：连击可多来源叠加，显示为「连击×N」；其余效果仍去重
 func _push_preview_fx(arr: Array, fx: Dictionary) -> void:
 	var t: String = _fx_text(fx)
 	if fx.op == "combo":
-		var idx := arr.find("连击")
-		if idx < 0:
-			arr.append("连击")
-		elif arr[idx].begins_with("连击×"):
-			arr[idx] = "连击×%d" % (int(arr[idx].substr(3)) + 1)
-		else:
-			arr[idx] = "连击×2"
+		# 必须按前缀找已有的「连击/连击×N」；旧实现直接 find("连击")，到第 3 个来源
+		# 就找不到「连击×2」而重复追加一条「连击」
+		for i in range(arr.size()):
+			var s: String = arr[i]
+			if s.begins_with("连击"):
+				var n: int = 1 if s == "连击" else int(s.substr(3))
+				arr[i] = "连击×%d" % (n + 1)
+				return
+		arr.append("连击")
 		return
 	if not arr.has(t):
 		arr.append(t)
 
 # 逐骰效果提示（参照原作：骰子点数下方标注可能出现的效果）
-# 规则：该骰凭借自身点数参与当前骰池即可达成条件时，标注对应效果；
-# 计数类条件（少年班连击/洞穿）与满血/always 等与骰值无关的条件不标注
+# 只标注「该骰参与某个刚好 need 颗的选择即可触发」的骰值相关被动；条件判定直接复用
+# Battle.eval_cond，避免与结算逻辑出现两套口径。命定骰必须入选，作为固定成员参与穷举。
+# 计数类（少年班连击/洞穿）与满血/always 等与骰值无关的条件不标注，避免每颗骰都挂提示。
+const HINT_COND_TYPES := ["has_pair", "pairs_ge", "all_eq_value", "not_all_eq_value", "all_even", "all_same", "sum_ge"]
+
 func _die_fx_hints(p: Dictionary, need: int) -> Dictionary:
 	var result := {}
-	if need <= 0:
+	if need <= 0 or need > p.dice.size():
 		return result
-	var pool: Array = p.dice.duplicate()
-	var values: Array = []
-	for d in pool:
-		values.append(d.value)
-	var group := {}
-	for v in values:
-		group[v] = group.get(v, 0) + 1
-	var pairs_total := 0
-	for v in group:
-		pairs_total += int(group[v]) / 2
-	for d in pool:
+	var mandatory: Array = []
+	for d in p.dice:
+		if _is_mingding(d):
+			mandatory.append(d)
+	if mandatory.size() > need:
+		return result
+	var strength: int = battle.strength_total(p)
+	for d in p.dice:
 		if d.is_yaocai():
 			continue
+		var fixed: Array = [d]
+		for m in mandatory:
+			if not fixed.has(m):
+				fixed.append(m)
+		var slots: int = need - fixed.size()
+		if slots < 0:
+			continue
+		var rest: Array = []
+		for x in p.dice:
+			if not fixed.has(x):
+				rest.append(x)
+		if slots > rest.size():
+			continue
+		var combos: Array = AIController.combinations(rest, slots)
 		var texts: Array = []
-		for pas in p.cfg.passives:
-			if pas.t != _phase and not (_phase == "attack" and pas.t == "attack_after"):
+		for pas in _phase_passives(p):
+			if not HINT_COND_TYPES.has(pas.c.t):
 				continue
-			var show := false
-			match pas.c.t:
-				"has_pair":
-					show = group.get(d.value, 0) >= 2
-				"pairs_ge":
-					show = group.get(d.value, 0) >= 2 and pairs_total >= pas.c.n
-				"all_eq_value":
-					show = d.value == pas.c.v and group.get(pas.c.v, 0) >= need
-				"not_all_eq_value":
-					var has_non_v := false
-					for x in values:
-						if x != pas.c.v:
-							has_non_v = true
-					show = pool.size() >= need and has_non_v
-				"all_even":
-					var even := 0
-					for x in values:
-						if x % 2 == 0:
-							even += 1
-					show = d.value % 2 == 0 and even >= need
-				"all_same":
-					show = group.get(d.value, 0) >= need
-				"sum_ge":
-					var rest: Array = values.duplicate()
-					rest.erase(d.value)
-					rest.sort()
-					var best := 0
-					for i in range(maxi(0, rest.size() - (need - 1)), rest.size()):
-						best += rest[i]
-					show = d.value + best + battle.strength_total(p) >= pas.c.n
-			if show:
-				for fx in pas.fx:
-					var t: String = _fx_text(fx)
-					if not texts.has(t):
-						texts.append(t)
-		if texts.size() > 0:
+			var hit := false
+			for extra in combos:
+				var sel: Array = fixed.duplicate()
+				sel.append_array(extra)
+				if Battle.eval_cond(pas.c, p, sel, {"atk_value": Battle.dice_sum(sel) + strength}):
+					hit = true
+					break
+			if not hit:
+				continue
+			for fx in pas.fx:
+				var t: String = _fx_text(fx)
+				if not texts.has(t):
+					texts.append(t)
+		if not texts.is_empty():
 			result[d] = texts
 	return result
 
+func _die_head(d: Die) -> String:
+	return d.yaocai if d.is_yaocai() else GameData.SIDES_TEXT.get(d.sides, "%d面" % d.sides)
+
 func _die_text(d: Die) -> String:
-	if d.is_yaocai():
-		return "%s\n%d" % [d.yaocai, d.value]
-	return "%s\n%d" % [SIDES_TEXT.get(d.sides, "%d面" % d.sides), d.value]
+	return "%s\n%d" % [_die_head(d), d.value]
 
 func _die_less(a: Die, b: Die) -> bool:
 	if a.value != b.value:
@@ -530,16 +666,32 @@ func _is_mingding(d: Die) -> bool:
 func _run() -> void:
 	while battle.winner < 0 and battle.round <= 80:
 		await _round_ui()
+		if not is_inside_tree():
+			return
+	if not is_inside_tree():
+		return
 	if battle.winner < 0:
 		# 达到回合上限仍未 KO：按 HP 判定胜者（与 driver.gd run_game 一致，避免误判人类输）
 		battle.winner = 0 if battle.players[0].hp > battle.players[1].hp else 1
-	_show_summary()
-	await sum_btn.pressed
-	get_tree().change_scene_to_file("res://scenes/select.tscn")
+	await _show_summary()
+	if not is_inside_tree():
+		return
+	# 允许返回失败后重试；_leaving 防止切场景过程中重复触发
+	while is_inside_tree():
+		await sum_btn.pressed
+		if _leaving or not is_inside_tree():
+			return
+		_leaving = true
+		var err: int = get_tree().change_scene_to_file("res://scenes/select.tscn")
+		if err == OK:
+			return
+		_leaving = false
+		sum_title.text = "返回选卡失败（错误码 %d），请再点一次" % err
 
 func _show_summary() -> void:
+	_hide_yc_popup()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.13, 0.14, 0.17, 0.98)
+	sb.bg_color = Color(0.13, 0.14, 0.17, 1.0)
 	sb.border_color = Color(0.45, 0.48, 0.55)
 	sb.set_border_width_all(2)
 	sb.set_corner_radius_all(12)
@@ -548,9 +700,16 @@ func _show_summary() -> void:
 	sum_title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3) if battle.winner == 0 else Color(1.0, 0.4, 0.35))
 	sum_stats.text = (GlossaryPanel.kw_bbcode(_summary_text()))
 	summary_view.visible = true
+	# 先让面板以目标宽度完成一次布局：RichTextLabel 在宽度 1px 时 fit_content 会把最小高度
+	# 算成逐字竖排的 1700+px；布局后再按实际换行高度收面板，避免固定 520px 的中部空白
+	await get_tree().process_frame
+	if not is_inside_tree():
+		return
+	_fit_sum_panel()
 
 func _round_ui() -> void:
 	battle.round_open()
+	_sel.clear()   # 上回合的高亮不带到新回合（human_phase 开始时会再清一次）
 	_en_rolled = false
 	_en_committed = false
 	refresh()
@@ -566,6 +725,8 @@ func _round_ui() -> void:
 		banner.text = "%s%s" % ["你" if idx == 0 else "敌方", "进攻" if phase == "attack" else "防御"]
 		big.text = ""
 		await _phase_ui(idx, phase)
+		if not is_inside_tree():
+			return
 	var def_idx: int = 1 - battle.attacker
 	var hp_before: int = battle.players[def_idx].hp
 	var ended_early: bool = battle.winner >= 0
@@ -581,8 +742,10 @@ func _round_ui() -> void:
 	big.text = "攻击值 %d ｜ 防御值 %d\n差值 %d ｜ 主伤害 %d%s\n守方生命 %d → %d（共掉血 %d）" % [
 		s.atk, s.def, diff, s.dmg, note, hp_before, hp_after, lost]
 	refresh()
-	await _wait(2.0)
-	battle.round_close()
+	if not await _wait(2.0):
+		return
+	if not battle.round_close():
+		push_warning("battle_ui: round_close 被拒绝（round=%d）" % battle.round)
 	refresh()
 
 # 结算横幅注记：区分「防御阶段已跳过」「commit 已分胜负」「结算中（荆棘/中毒等）分出胜负」
@@ -611,48 +774,76 @@ func _phase_ui(idx: int, phase: String) -> void:
 	battle.roll_phase(idx)
 	if idx == 1:
 		_en_rolled = true
+	# 投骰演出期间隐藏对应骰行，避免静态 3D 骰提前露出停骰结果（演出与重投共用 _animate_roll）
+	var row: Control = dice_row if idx == 0 else enemy_dice
+	row.visible = false
 	refresh()
-	roll_view.visible = true
-	if idx == 0:
-		roller.roll(battle.players[0].dice, [])
-	else:
-		roller.roll([], battle.players[1].dice)
-	await roller.finished
-	roll_view.visible = false
+	if not await _animate_roll(battle.players[idx].dice, idx):
+		return
 	if idx == 0:
 		await _human_phase(phase)
 	else:
 		await _ai_phase(idx, phase)
 
 # 单次投骰/重投演出：只把传入的骰子放进 3D 视口；重投走 quick 短版动画
-func _animate_roll(dice: Array, idx: int, quick: bool = false) -> void:
+# 返回 false 表示节点已离开场景树（调用方应立即收手）；动画超时则强制继续并返回 true
+func _animate_roll(dice: Array, idx: int, quick: bool = false) -> bool:
+	var row: Control = dice_row if idx == 0 else enemy_dice
+	row.visible = false
+	if idx == 1:
+		enemy_dice_label.visible = false   # 骰行隐藏时标题也别悬在空处
 	if dice.is_empty():
-		return
+		row.visible = true
+		if idx == 1:
+			enemy_dice_label.visible = enemy_dice_label.text != ""
+		return is_inside_tree()
 	roll_view.visible = true
 	if idx == 0:
 		roller.roll(dice, [], quick)
 	else:
 		roller.roll([], dice, quick)
-	await roller.finished
+	# 看门狗：dice_roll 异常/信号丢失时不能让整个回合永久等待
+	_roll_done = false
+	_roll_cb = func() -> void: _roll_done = true
+	roller.finished.connect(_roll_cb, CONNECT_ONE_SHOT)
+	var elapsed := 0.0
+	while not _roll_done and elapsed < 8.0:
+		if not is_inside_tree():
+			if roller.finished.is_connected(_roll_cb):
+				roller.finished.disconnect(_roll_cb)
+			return false
+		await get_tree().process_frame
+		elapsed += get_process_delta_time()
+	if roller.finished.is_connected(_roll_cb):
+		roller.finished.disconnect(_roll_cb)
+	if not _roll_done:
+		push_warning("battle_ui: 投骰演出超时，强制继续")
 	roll_view.visible = false
+	row.visible = true
+	if idx == 1:
+		enemy_dice_label.visible = enemy_dice_label.text != ""
+	_arm_views(_die_views if idx == 0 else _enemy_views)
+	return is_inside_tree()
 
 # 曜彩骰投掷的 3D 演出：普通骰在 _phase_ui 已有演出，曜彩骰此前只在 2D 行直接出现、无动画
-func _animate_yaocai(idx: int) -> void:
+func _animate_yaocai(idx: int) -> bool:
 	var yc_die: Die = null
 	for d in battle.players[idx].dice:
 		if d.is_yaocai():
 			yc_die = d
 			break
 	if yc_die == null:
-		return
-	await _animate_roll([yc_die], idx)
+		return true
+	var ok: bool = await _animate_roll([yc_die], idx)
+	return ok
 
 func _ai_phase(idx: int, phase: String) -> void:
 	var p: Dictionary = battle.players[idx]
 	if battle.yaocai_usable(idx, phase) and ai.choose_yaocai(p, phase):
-		battle.roll_yaocai(idx, phase)
-		refresh()
-		await _animate_yaocai(idx)
+		if battle.roll_yaocai(idx, phase):
+			refresh()
+			if not await _animate_yaocai(idx):
+				return
 	if phase == "attack":
 		while battle.rerolls_left(idx) > 0:
 			var picks: Array = ai.choose_reroll(p)
@@ -660,24 +851,36 @@ func _ai_phase(idx: int, phase: String) -> void:
 				break
 			# do_reroll 会把命定曜彩骰强制加入并返回实际重投集合，演出必须用它
 			picks = battle.do_reroll(idx, picks)
-			await _animate_roll(picks, idx, true)
+			if picks.is_empty():
+				break
+			if not await _animate_roll(picks, idx, true):
+				return
 			refresh()
 	var count: int = battle.selection_count(idx, phase)
 	var sel: Array = ai.choose_selection(p, phase, count)
-	battle.commit_selection(idx, phase, sel)
+	if not battle.commit_selection(idx, phase, sel):
+		# AI 选骰异常时用空选兜底（commit 会自动补足/截断），避免整局在没有有效提交的情况下结算
+		push_warning("battle_ui: AI commit 被拒绝（idx=%d phase=%s），改用空选兜底" % [idx, phase])
+		if not battle.commit_selection(idx, phase, []):
+			push_error("battle_ui: AI 空选兜底仍被拒绝（idx=%d phase=%s）" % [idx, phase])
 	_en_committed = true
 	refresh()
-	await _wait(0.5)
+	if not await _wait(0.5):
+		return
 
 func _human_phase(phase: String) -> void:
 	_phase = phase
 	_sel.clear()
 	_need = battle.selection_count(0, phase)
+	_phase_done = false
 	_human_active = true
 	refresh()
-	await phase_confirmed
+	# 不直接 await 信号：confirm 失败/节点释放/winner 已定时也要能退出，避免永久软锁
+	while not _phase_done and battle.winner < 0 and is_inside_tree():
+		await get_tree().process_frame
 	_human_active = false
-	refresh()
+	if is_inside_tree():
+		refresh()   # 场景已释放时不得再刷 UI（会创建 Tween/触发延迟渲染）
 
 func _on_die(d: Die) -> void:
 	if not _human_active:
@@ -693,18 +896,42 @@ func _on_die(d: Die) -> void:
 func _on_kw_meta(meta: Variant) -> void:
 	glossary.open(str(meta))
 
+# Esc 关闭当前弹窗（曜彩/效果显示）；不抢占按钮的鼠标操作
+func _unhandled_input(event: InputEvent) -> void:
+	if not (event is InputEventKey):
+		return
+	var key := event as InputEventKey
+	if not key.pressed or key.echo or key.keycode != KEY_ESCAPE:
+		return
+	if yc_popup.visible:
+		_hide_yc_popup()
+		get_viewport().set_input_as_handled()
+	elif glossary != null and glossary.visible:
+		glossary.visible = false
+		get_viewport().set_input_as_handled()
+
 func _summary_text() -> String:
 	# round_close 每回合结束都 round+=1（终局那回合也不例外），故实际打完的回合数 = battle.round - 1
-	var lines: Array = ["总回合数 %d" % (battle.round - 1)]
+	# 用 BBCode 表格固定三列，避免名字长短不同导致「造成/承受」数字错位
+	var lines: Array = [
+		"总回合数 %d" % (battle.round - 1),
+		"[table=3,3]",
+		"[cell][color=#9aa0ad]玩家[/color][/cell]"
+		+ "[cell][color=#9aa0ad]造成伤害[/color][/cell]"
+		+ "[cell][color=#9aa0ad]承受伤害[/color][/cell]",
+	]
 	for i in [0, 1]:
 		var p: Dictionary = battle.players[i]
 		var st: Dictionary = battle.stats[i]
 		var fx_parts: Array = []
 		for op in st.fx:
 			fx_parts.append("%s×%d" % [_fx_name(op), st.fx[op]])
-		lines.append("%s（%s）：造成 %d 伤害｜承受 %d 伤害%s" % [
-			p.cfg.name, "你" if i == 0 else "敌", st.dmg_dealt, st.dmg_taken,
-			"" if fx_parts.size() == 0 else "\n　触发：%s" % "、".join(fx_parts)])
+		var name_text: String = "%s（%s）" % [p.cfg.name, "你" if i == 0 else "敌"]
+		if fx_parts.size() > 0:
+			name_text += "\n[color=#9aa0ad]　触发：%s[/color]" % "、".join(fx_parts)
+		lines.append("[cell]%s[/cell][cell][color=#ffb366]%d[/color][/cell][cell]%d[/cell]" % [
+			name_text, st.dmg_dealt, st.dmg_taken])
+	lines.append("[/table]")
 	return "\n".join(lines)
 
 func _fx_name(op: String) -> String:
@@ -734,8 +961,7 @@ func _fx_name(op: String) -> String:
 # 曜彩弹窗窄窗口适配：基准 580×500，右缘 40px 固定；窗口变窄时整体收窄，
 # 六面卡片从 3 列降为 2/1 列并同步降低卡片最小宽度，避免固定尺寸把弹窗顶出屏幕
 func _fit_yc_popup(vp: Vector2 = Vector2.ZERO) -> void:
-	if vp == Vector2.ZERO:
-		vp = get_viewport_rect().size
+	vp = _viewport_size(vp)
 	var w: float = minf(YC_POPUP_BASE.x, maxf(vp.x - YC_POPUP_MARGIN * 2.0, 240.0))
 	var h: float = minf(YC_POPUP_BASE.y, maxf(vp.y - YC_POPUP_TOP - YC_POPUP_MARGIN, 220.0))
 	yc_popup.offset_left = -YC_POPUP_MARGIN - w
@@ -754,22 +980,27 @@ func _fit_yc_popup(vp: Vector2 = Vector2.ZERO) -> void:
 		if c is Control:
 			(c as Control).custom_minimum_size = Vector2(cell_w, 94.0)
 
-# 战绩面板同类问题：固定 1040×720 居中，窄窗口下收窄
+# 战绩面板：宽度基准 1040 居中；高度取内容最小高度（上限 520），
+# 避免固定高度在战绩行数少时留下大片空白，窄窗口下同时受视口约束
 func _fit_sum_panel(vp: Vector2 = Vector2.ZERO) -> void:
-	if vp == Vector2.ZERO:
-		vp = get_viewport_rect().size
+	vp = _viewport_size(vp)
 	var w: float = minf(SUM_PANEL_BASE.x, maxf(vp.x - 48.0, 320.0))
-	var h: float = minf(SUM_PANEL_BASE.y, maxf(vp.y - 48.0, 240.0))
+	var max_h: float = minf(SUM_PANEL_BASE.y, maxf(vp.y - 48.0, 240.0))
+	var content_h: float = sum_panel.get_combined_minimum_size().y
+	var h: float = clampf(content_h, minf(SUM_PANEL_MIN_H, max_h), max_h)
 	sum_panel.offset_left = -w * 0.5
 	sum_panel.offset_right = w * 0.5
 	sum_panel.offset_top = -h * 0.5
 	sum_panel.offset_bottom = h * 0.5
 
+func _viewport_size(vp: Vector2) -> Vector2:
+	return get_viewport_rect().size if vp == Vector2.ZERO else vp
+
 func _on_yc() -> void:
 	if not _human_active or battle.players[0].yc_name == "":
 		return
 	if yc_popup.visible:
-		yc_popup.visible = false
+		_hide_yc_popup()
 		return
 	var p: Dictionary = battle.players[0]
 	yc_title.text = "曜彩「%s」" % p.yc_name
@@ -785,6 +1016,8 @@ func _on_yc() -> void:
 	if reason != "":
 		yc_uses.text += "\n当前不可用：%s" % reason
 	yc_use_btn.disabled = reason != ""
+	_primary.apply_primary(yc_use_btn, not yc_use_btn.disabled)
+	yc_dim.visible = true
 	yc_popup.visible = true
 
 # 曜彩六面表：每面一张卡片（点数 + 效果）。此前用 fit_content 的 RichTextLabel 直接塞进
@@ -829,18 +1062,26 @@ func _make_face_cell(f: Dictionary) -> Control:
 func _on_yc_use() -> void:
 	if not _human_active:
 		return
-	yc_popup.visible = false
+	_hide_yc_popup()
 	if battle.yaocai_usable(0, _phase):
-		battle.roll_yaocai(0, _phase)
+		if not battle.roll_yaocai(0, _phase):
+			return
 		_sel.clear()
 		_human_active = false   # 演出期间锁定输入，避免动画中点选/确认
 		refresh()
-		await _animate_yaocai(0)
-		_human_active = true
+		if not await _animate_yaocai(0):
+			return
+		if not is_inside_tree():
+			return
+		_human_active = battle.winner < 0
 		refresh()
 
-func _on_yc_close() -> void:
+func _hide_yc_popup() -> void:
 	yc_popup.visible = false
+	yc_dim.visible = false
+
+func _on_yc_close() -> void:
+	_hide_yc_popup()
 
 func _on_reroll() -> void:
 	if not _human_active or battle.winner >= 0:
@@ -848,33 +1089,39 @@ func _on_reroll() -> void:
 	if _phase != "attack" or battle.rerolls_left(0) <= 0 or _sel.size() < 1:
 		return
 	var picks: Array = battle.do_reroll(0, _sel.duplicate())
+	if picks.is_empty():
+		return
 	_human_active = false   # 演出期间锁输入，避免动画中点选/确认
 	# 不立即 refresh：先保持旧骰面，等翻滚停稳后再一次性显示新点数（少一次重建、也不剧透）
 	info_label.text = ""
-	for c in dice_row.get_children():
-		if c is Button:
-			(c as Button).disabled = true
+	dice_tip.text = ""
+	_set_dice_input(false)
 	btn_confirm.disabled = true
 	btn_reroll.disabled = true
 	btn_yc.disabled = true
-	yc_popup.visible = false
-	await _animate_roll(picks, 0, true)
-	_human_active = true
+	_hide_yc_popup()
+	if not await _animate_roll(picks, 0, true):
+		return
+	if not is_inside_tree():
+		return
+	_human_active = battle.winner < 0
 	refresh()
 
 func _on_confirm() -> void:
 	if not _human_active:
 		return
 	if _need > 0 and _sel.size() != _need:
-		info_label.text = "必须恰好选 %d 颗！" % _need
+		info_label.text = "[center]必须恰好选 %d 颗！[/center]" % _need
 		return
 	if _need == 0 and _sel.size() < 1:
-		info_label.text = "至少选 1 颗！"
+		info_label.text = "[center]至少选 1 颗！[/center]"
 		return
-	battle.commit_selection(0, _phase, _sel.duplicate())
-	_human_active = false   # 立即锁输入：commit 可能有瞬伤，避免信号恢复前双击二次提交
+	if not battle.commit_selection(0, _phase, _sel.duplicate()):
+		info_label.text = "[center]提交失败，请重新选择[/center]"
+		return
+	_human_active = false   # 立即锁输入：commit 可能有瞬伤，避免同一帧双击二次提交
+	_phase_done = true
 	refresh()
-	phase_confirmed.emit()
 
 # 掉血反馈：Battle.damage() 每次扣血都往 battle.hits 记一笔，refresh 时消费新增事件。
 # 主伤害/连击/反击/瞬伤/荆棘/中毒共用同一套闪红+飘字，非主伤害额外标注来源

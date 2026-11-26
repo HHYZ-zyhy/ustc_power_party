@@ -4,8 +4,9 @@ extends RefCounted
 # v1 贪心 AI：枚举选骰组合取期望净收益最大；重投与曜彩投掷用简单启发式
 
 func _combos(pool: Array, k: int) -> Array:
-	var result: Array = []
 	if k == 0:
+		# 攻击等级 0（少年班）：枚举所有非空子集，最多 4 颗
+		var result: Array = []
 		for mask in range(1, 1 << pool.size()):
 			var combo: Array = []
 			for i in range(pool.size()):
@@ -14,11 +15,15 @@ func _combos(pool: Array, k: int) -> Array:
 			if combo.size() <= 4:
 				result.append(combo)
 		return result
-	var idx: Array = []
-	_combo_rec(pool, k, 0, idx, result)
+	return combinations(pool, k)
+
+# 精确 k 组合（k=0 返回一个空组合）；battle_ui 的逐骰提示也用它穷举可能选择
+static func combinations(pool: Array, k: int) -> Array:
+	var result: Array = []
+	_combine_rec(pool, k, 0, [], result)
 	return result
 
-func _combo_rec(pool: Array, k: int, start: int, idx: Array, result: Array) -> void:
+static func _combine_rec(pool: Array, k: int, start: int, idx: Array, result: Array) -> void:
 	if idx.size() == k:
 		var combo: Array = []
 		for i in idx:
@@ -27,54 +32,21 @@ func _combo_rec(pool: Array, k: int, start: int, idx: Array, result: Array) -> v
 		return
 	for i in range(start, pool.size()):
 		idx.append(i)
-		_combo_rec(pool, k, i + 1, idx, result)
+		_combine_rec(pool, k, i + 1, idx, result)
 		idx.pop_back()
-
-func _pairs(values: Array) -> int:
-	var counts := {}
-	for v in values:
-		counts[v] = counts.get(v, 0) + 1
-	var pairs := 0
-	for v in counts:
-		pairs += int(counts[v]) / 2
-	return pairs
 
 func _trigger_bonus(p: Dictionary, combo: Array, phase: String) -> float:
 	var values: Array = []
 	for d in combo:
 		values.append(d.value)
+	var sum := Battle.dice_sum(combo)
 	var bonus := 0.0
-	var sum := 0
-	for v in values:
-		sum += v
 	for pas in p.cfg.passives:
 		var t := "attack" if phase == "attack" else "defense"
 		if pas.t != t:
 			continue
-		var ok := false
-		match pas.c.t:
-			"always": ok = true
-			"count_le": ok = combo.size() <= pas.c.n
-			"count_eq": ok = combo.size() == pas.c.n
-			"all_eq_value":
-				ok = values.size() > 0
-				for v in values:
-					if v != pas.c.v:
-						ok = false
-			"pairs_ge": ok = _pairs(values) >= pas.c.n
-			"full_hp": ok = p.hp == p.hp_max
-			"all_even":
-				ok = values.size() > 0
-				for v in values:
-					if v % 2 != 0:
-						ok = false
-			"has_pair": ok = _pairs(values) >= 1
-			"all_same":
-				ok = values.size() > 0
-				for v in values:
-					if v != values[0]:
-						ok = false
-		if not ok:
+		# 条件判定与正式结算完全同口径（唯一实现：Battle.eval_cond）
+		if not Battle.eval_cond(pas.c, p, combo, {"atk_value": sum}):
 			continue
 		for fx in pas.fx:
 			match fx.op:
@@ -83,7 +55,7 @@ func _trigger_bonus(p: Dictionary, combo: Array, phase: String) -> float:
 				"atk_add": bonus += fx.n
 				"upgrade_sel": bonus += 4.0
 				"hack": bonus += 3.0
-				"instant_per_pair": bonus += 3.0 * _pairs(values)
+				"instant_per_pair": bonus += 3.0 * Battle.pairs_count(values)
 				"leech": bonus += sum * 0.25
 				"unyielding_once":
 					if not p.unyielding_used:
@@ -109,9 +81,7 @@ func choose_selection(p: Dictionary, phase: String, count: int) -> Array:
 	var best_score := -1e9
 	var opp_est := 3.5 * 3 if phase == "attack" else 3.5 * 4
 	for combo in combos:
-		var sum := 0
-		for d in combo:
-			sum += d.value
+		var sum := Battle.dice_sum(combo)
 		var bonus := _trigger_bonus(p, combo, phase)
 		var score: float
 		if phase == "attack":

@@ -70,16 +70,51 @@ func _init() -> void:
 		var d := Die.new()
 		d.sides = sides
 		d.value = 1
-		var spec: Dictionary = s2.roller._faces_for(d)
+		var spec: Dictionary = DieVisuals._faces_for(d)
 		assert(spec.faces.size() == sides)
 		var nums := {}
 		for f in spec.faces:
 			nums[int(f.label)] = true
 		assert(nums.size() == sides)
+		# 官方 BoxMesh 只用于立方（d6/曜彩）；其余为精确正多面体网格
+		var mesh: Mesh = DieVisuals._mesh_for(d, spec)
+		assert((mesh is BoxMesh) == (sides == 6))
+		# 骰子本体必须完全不透明
+		assert(DieVisuals._material_for(d, spec).transparency == BaseMaterial3D.TRANSPARENCY_DISABLED)
+		# 数字贴面：只在面外侧 0.0015，且不穿透/不双面
+		var lab: Label3D = DieVisuals._label_for(spec.faces[0], Color.WHITE)
+		assert(lab.transform.origin.distance_to(spec.faces[0].center) < 0.01)
+		assert(not lab.no_depth_test and not lab.double_sided)
+		lab.free()
+		# 停骰姿态：非 d4 的结果面朝上；d4 有一个面着地且结果面朝镜头
+		var rest: Basis = DieVisuals._rest_rotation(d, spec.faces, 0)
+		var up: Vector3 = rest * (spec.faces[0].normal as Vector3)
+		if sides == 4:
+			assert(absf(up.y - 1.0 / 3.0) < 0.01 and up.z > 0.0)
+			var down_ok := false
+			for f in spec.faces:
+				if (rest * (f.normal as Vector3)).is_equal_approx(Vector3.DOWN):
+					down_ok = true
+			assert(down_ok)
+			# 正四面体结果面倾斜时，刻字仍必须尽量竖直（否则 1 会歪成 7）
+			for fi in range(spec.faces.size()):
+				var rr: Basis = DieVisuals._rest_rotation(d, spec.faces, fi)
+				var d4_lab: Label3D = DieVisuals._label_for(spec.faces[fi], Color.WHITE)
+				assert((rr * d4_lab.transform.basis.y).dot(Vector3.UP) > 0.9)
+				d4_lab.free()
+		else:
+			assert(up.y > 0.999 and absf(up.x) < 0.01 and absf(up.z) < 0.01)
+		# 静态选骰视图：结果面朝镜头，再绕屏幕水平轴轻微上仰（参考原作截图）
+		var disp: Basis = DieVisuals.display_rotation(spec.faces, 0, DieView.CAM_NORMAL)
+		var to_cam: Vector3 = (disp * (spec.faces[0].normal as Vector3)).normalized()
+		assert(to_cam.dot(DieView.CAM_NORMAL.normalized()) > 0.8)
 	var yd := Die.new()
 	yd.yaocai = "网络渗透"
 	yd.face = 0
-	assert(s2.roller._faces_for(yd).faces.size() == 6)
+	var yspec: Dictionary = DieVisuals._faces_for(yd)
+	assert(yspec.faces.size() == 6)
+	assert(DieVisuals._mesh_for(yd, yspec) is BoxMesh)
+	assert(DieVisuals._material_for(yd, yspec).transparency == BaseMaterial3D.TRANSPARENCY_DISABLED)
 	# HP 进度条：与双方血量/上限同步
 	assert(s2.enemy_hp_bar.max_value == s2.battle.players[1].hp_max)
 	assert(s2.enemy_hp_bar.value == s2.battle.players[1].hp)
@@ -98,6 +133,11 @@ func _init() -> void:
 	s2._refresh_preview()
 	assert(s2.info_label.text.contains("连击"))
 	assert(s2.info_label.text.contains("×2"))
+	# 多来源连击计数必须按前缀累加：3 个来源 -> 连击×3（旧实现第 3 个会重复追加）
+	var combo_arr: Array = []
+	for i in range(3):
+		s2._push_preview_fx(combo_arr, {"op": "combo"})
+	assert(combo_arr == ["连击×3"])
 	# 结算横幅注记：结算中（荆棘/中毒等）分出胜负不能误标「力场挡下」；多段连击显示段数
 	var no_hit := {"dmg": 0, "dmg2": 0, "counter": 0, "combo_n": 0, "pierce": false}
 	assert(s2._settle_notes(false, false, true, no_hit, 5)[0].contains("主伤害未造成"))
@@ -116,6 +156,215 @@ func _init() -> void:
 	s2._on_die(md)
 	assert(s2._sel.has(md))
 	s2._human_active = false
+	# 候选骰 3D 化：DiceRow 是池化的 DieView，点骰子切换 _sel，提示在骰子下方
+	s2._human_active = true
+	s2._phase = "attack"
+	s2._need = s2.battle.selection_count(0, "attack")
+	s2._sel.clear()
+	s2.refresh()
+	for i in range(10):
+		await process_frame
+	var my_dice: Array = s2.battle.players[0].dice
+	assert(s2.dice_row.get_child_count() == my_dice.size())
+	for c in s2.dice_row.get_children():
+		assert(c is DieView)
+		var dv: DieView = c
+		assert(dv.get_sub_viewport().size == Vector2i(DieView.DIE_SIZE))
+		assert(dv.get_sub_viewport().own_world_3d)
+		assert(dv.get_child(1) == dv.get_hint_label())
+		assert(dv.get_die_button().custom_minimum_size == DieView.DIE_SIZE)
+		assert(dv.get_hint_label().custom_minimum_size.y == DieView.HINT_HEIGHT)
+	assert(s2.dice_tip.text.contains("点击骰子"))
+	assert(s2.btn_confirm.disabled)   # 未选够，确认按钮置灰
+	var first_view: DieView = s2.dice_row.get_child(0)
+	var first_die: Die = first_view.get_die()
+	var first_id: int = first_view.get_instance_id()
+	# 骰体背面剔除 + 不透明；选中描边是 CULL_FRONT 不透明反壳（依赖网格顺时针绕序）
+	assert(first_view._mesh.material_override.cull_mode == BaseMaterial3D.CULL_BACK)
+	assert(first_view._sel_shell.material_override.cull_mode == BaseMaterial3D.CULL_FRONT)
+	assert(first_view._sel_shell.material_override.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED)
+	assert(first_view.is_interactive())
+	first_view.activate()
+	assert(s2._sel.has(first_die))
+	first_view.activate()
+	assert(not s2._sel.has(first_die))
+	# 非人类阶段只压暗颜色，不得把骰子调成半透明
+	first_view.set_dimmed(true)
+	assert(first_view.modulate.a == 1.0)
+	first_view.set_dimmed(false)
+	s2.refresh()
+	assert(s2.dice_row.get_child(0).get_instance_id() == first_id)
+	# 逐骰提示：物理学院 2 组对子，提示行含「连击」与骰型文字
+	var sides_txt := GameData.SIDES_TEXT
+	for i in range(4):
+		my_dice[i].value = 2 if i < 2 else 3
+	s2._need = 4
+	s2._sel.clear()
+	s2.refresh()
+	var hint_ok := false
+	for c in s2.dice_row.get_children():
+		var dv: DieView = c
+		var txt: String = dv.get_hint_label().text
+		if txt.contains("连击") and txt.contains(sides_txt.get(dv.get_die().sides, "")):
+			hint_ok = true
+	assert(hint_ok)
+	# 选够后确认按钮启用，提示行同步显示需选数量
+	s2._sel.clear()
+	for i in range(mini(s2._need, my_dice.size())):
+		s2._sel.append(my_dice[i])
+	s2.refresh()
+	assert(s2._sel.size() == s2._need and not s2.btn_confirm.disabled)
+	assert(s2.dice_tip.text.contains("需选 %d 颗" % s2._need))
+	# 逐骰提示与结算同口径：命定曜彩骰强制入选后，网安 sum_ge 差一颗高骰就应无提示
+	var cp := {"cfg": GameData.CHARACTERS["cyber"], "dice": [], "strength": [], "hp": 25, "hp_max": 25}
+	for v in [1, 1, 10, 10, 10]:
+		var cd := Die.new()
+		cd.sides = 6
+		cd.value = v
+		cp.dice.append(cd)
+	var myd := Die.new()
+	myd.yaocai = "命运签约"
+	myd.face = 0
+	myd.value = 1
+	cp.dice.append(myd)
+	s2._phase = "attack"
+	var cyber_hints: Dictionary = s2._die_fx_hints(cp, 3)
+	assert(cyber_hints.has(cp.dice[2]))       # 10 + 命定1 + 10 = 21 ≥ 19
+	assert(not cyber_hints.has(cp.dice[0]))   # 1 + 命定1 + 10 = 12 < 19（旧近似会误报）
+	# 命定骰的 DieView 必须锁定，点击不能取消
+	var md2 := Die.new()
+	md2.yaocai = "命运签约"
+	md2.face = 0
+	md2.value = 1
+	s2.battle.players[0].dice.append(md2)
+	s2._human_active = true
+	s2.refresh()
+	var mv: DieView = s2._die_views[md2]
+	assert(mv.is_locked())
+	assert(not mv.is_interactive())
+	assert(s2._sel.has(md2))
+	mv.activate()
+	assert(s2._sel.has(md2))
+	s2.battle.players[0].dice.erase(md2)
+	s2._sel.erase(md2)
+	s2.refresh()
+	# 敌方骰块：黑色信息条框外、名字正下方的玩家候选行缩小版（96×132，带提示、不可点击）
+	var en: Dictionary = s2.battle.players[1]
+	for i in range(en.dice.size()):
+		en.dice[i].value = i + 1
+	s2._en_rolled = true
+	s2._en_committed = false
+	s2.refresh()
+	var enemy_views := 0
+	for c in s2.enemy_dice.get_children():
+		if c is DieView:
+			enemy_views += 1
+			assert(c.get_sub_viewport().size == Vector2i(DieView.ENEMY_DIE_SIZE))
+			assert(c.get_hint_label().visible)
+			assert(c.get_hint_label().custom_minimum_size.y == DieView.ENEMY_HINT_HEIGHT)
+			assert(not c.is_interactive())
+	assert(enemy_views == en.dice.size())
+	s2._en_committed = true
+	en.sel = [en.dice[0], en.dice[1]]
+	s2.refresh()
+	var visible_views := 0
+	for c in s2.enemy_dice.get_children():
+		if c is DieView and c.visible:
+			visible_views += 1
+	assert(visible_views == 2)
+	assert(s2.enemy_dice_total.visible and s2.enemy_dice_total.text.begins_with("总计"))
+	assert(s2.enemy_dice_label.text == "敌方所选")
+	# 布局：玩家骰行 720–870 不压 LogLine 872；敌方骰块在信息条框外、名字正下方且不压结算区
+	for i in range(10):
+		await process_frame
+	assert(s2.dice_row.offset_top == 720.0 and s2.dice_row.offset_bottom == 870.0)
+	assert(s2.dice_row.offset_bottom <= s2.log_line.offset_top)
+	assert(s2.log_line.offset_bottom <= s2.player_bar.offset_top)
+	assert(s2.dice_tip.offset_bottom <= s2.dice_row.offset_top)
+	assert(not s2.enemy_bar.is_ancestor_of(s2.enemy_dice))
+	assert(s2.enemy_dice_block.offset_top >= s2.enemy_bar.offset_bottom)
+	assert(is_equal_approx(s2.enemy_dice_block.offset_left, s2.enemy_bar.offset_left + 20.0))
+	assert(s2.enemy_dice is GridContainer)
+	assert(s2.enemy_dice.columns == 5)
+	assert(s2.enemy_dice_label.get_parent() == s2.enemy_dice_head)
+	assert(s2.enemy_dice_total.get_parent() == s2.enemy_dice_head)
+	assert(s2.enemy_dice_label.get_index() < s2.enemy_dice_total.get_index())
+	assert(s2.enemy_dice_block.offset_right <= 900.0)
+	assert(s2.enemy_dice_block.offset_bottom <= s2.dice_row.offset_top)
+	assert(s2.enemy_bar.offset_bottom <= s2.banner.offset_top)
+	assert(s2.enemy_dice.get_combined_minimum_size().x <= 680.0)
+	# 敌方信息条只放名字/被动/状态：最长被动 + 状态行不得把内容顶出面板
+	s2.enemy_passive.text = "攻击时：可以选定任意数量的骰子（至少1个），本次攻击若选定3个以下骰子则获得连击，若只选定1个骰子则再获得洞穿。"
+	s2.enemy_status.text = "荆棘9（待结算）、力场、不屈、力量99（下回合）、跃升"
+	for i in range(2):
+		await process_frame
+	assert(s2.enemy_bar.get_combined_minimum_size().y <= s2.enemy_bar.size.y + 0.5)
+	# 最坏情况：6 颗敌方骰 + 长被动/状态，信息条仍不溢出、骰块换行后不越界
+	var extra := Die.new()
+	extra.sides = 6
+	extra.value = 2
+	en.dice.append(extra)
+	en.sel = en.dice.duplicate()
+	s2._en_committed = true
+	s2.refresh()
+	for i in range(2):
+		await process_frame
+	assert(s2.enemy_bar.get_combined_minimum_size().y <= s2.enemy_bar.size.y + 0.5)
+	assert(s2.enemy_dice.get_combined_minimum_size().x <= 680.0)
+	# 6 颗时第 6 颗换第二行，骰块仍不越过居中横幅文字、也不到玩家骰行
+	assert(s2.enemy_dice_block.offset_right <= 900.0)
+	assert(s2.enemy_dice_block.offset_bottom <= s2.dice_row.offset_top)
+	en.sel = []
+	en.dice.erase(extra)
+	s2._en_committed = false
+	s2.refresh()
+	# 信息栏内边距：文字与深色面板边缘留出 20/8px，且面板裁切内容不越界
+	for bar_path in ["EnemyBar", "PlayerBar"]:
+		var bar: PanelContainer = s2.get_node(bar_path)
+		var bar_style: StyleBox = bar.get_theme_stylebox("panel")
+		assert(is_equal_approx(bar_style.content_margin_left, 20.0))
+		assert(is_equal_approx(bar_style.content_margin_right, 20.0))
+		assert(is_equal_approx(bar_style.content_margin_top, 8.0))
+		assert(bar.clip_contents)
+	# 最长被动（2 行）+ 状态行：玩家条向下增长时仍不得越过 1080 逻辑高度
+	s2.player_passive.text = "攻击时：可以选定任意数量的骰子（至少1个），本次攻击若选定3个以下骰子则获得连击，若只选定1个骰子则再获得洞穿。"
+	s2.player_status.text = "荆棘9（待结算）、力场、不屈、力量99（下回合）、跃升"
+	for i in range(2):
+		await process_frame
+	assert(s2.player_bar.offset_top + s2.player_bar.get_combined_minimum_size().y <= 1080.0)
+	# 按钮列宽度固定 260：最长文案必须能装下，否则 VBox 会向左扩展压住玩家信息栏
+	s2.btn_yc.text = "曜彩 网络渗透\n剩12次·可用"
+	s2.btn_reroll.text = "重投所选5颗\n（剩2次）"
+	s2.btn_confirm.text = "确认选骰 5/5"
+	for i in range(2):
+		await process_frame
+	for b in [s2.btn_yc, s2.btn_reroll, s2.btn_confirm]:
+		assert((b as Button).get_combined_minimum_size().x <= 260.0)
+	s2._human_active = false
+	s2._en_committed = false
+	s2._en_rolled = false
+	en.sel = []
+	s2._sel.clear()
+	s2._phase = ""
+	s2.refresh()
+	# 非人类阶段：选骰提示清空；第 2 回合未投时敌方标题显示「敌方上回合」
+	assert(s2.dice_tip.text == "")
+	assert(s2.enemy_dice_label.text == "")
+	assert(not s2.enemy_dice_label.visible)
+	assert(s2.enemy_bar.offset_bottom < 180.0)
+	s2.battle.round = 2
+	s2.refresh()
+	assert(s2.enemy_dice_label.text == "敌方上回合")
+	s2.battle.round = 1
+	s2.refresh()
+	# 状态栏是信息条 VBox 的独立第三行（不是名字/HP 横排的子项）
+	assert(s2.enemy_status.get_parent() == s2.enemy_passive.get_parent())
+	assert(s2.enemy_status.get_index() > s2.enemy_passive.get_index())
+	assert(s2.player_status.get_parent() == s2.player_passive.get_parent())
+	assert(s2.player_status.get_index() > s2.player_passive.get_index())
+	# 战绩页全屏遮罩（防止战斗界面文字透出）
+	var summary_dim: ColorRect = s2.summary_view.get_node("Dim")
+	assert(summary_dim.color.a >= 0.6)
 	# 窄窗口自适应：600px 宽视口下曜彩弹窗/效果显示/战绩面板都不出屏
 	s2._fit_yc_popup(Vector2(600, 1080))
 	assert(600.0 + s2.yc_popup.offset_left >= 0.0)
@@ -137,5 +386,32 @@ func _init() -> void:
 				assert(s2._fx_name(fx.op) != fx.op)
 	assert(s2._fx_name("atk_add") == "攻击值加成")
 	assert(s2._fx_name("mingding") == "命定")
+	# GameStateData 入口校验（2026-11-25）：非法角色/曜彩回退，无曜彩角色清空，有效空曜彩保持
+	GameStateData.char_id = "bogus"
+	GameStateData.yc_name = "bogus"
+	GameStateData.sanitize()
+	assert(GameStateData.char_id == "physics")
+	assert(GameStateData.yc_name == "网络渗透")
+	GameStateData.char_id = "chem"
+	GameStateData.yc_name = "网络渗透"
+	GameStateData.sanitize()
+	assert(GameStateData.yc_name == "")
+	GameStateData.char_id = "physics"
+	GameStateData.yc_name = ""
+	GameStateData.sanitize()
+	assert(GameStateData.yc_name == "")
+	# 静态残留非法角色时，选卡页应回到未选中态而不是崩在裸下标
+	GameStateData.char_id = "bogus"
+	GameStateData.yc_name = "bogus"
+	var s4: Node = load("res://scenes/select.tscn").instantiate()
+	root.add_child(s4)
+	for i in range(2):
+		await process_frame
+	assert(s4._sel_char == "")
+	assert(s4.start_btn.disabled)
+	s4._sel_char = "bogus"
+	assert(not s4._can_start())
+	root.remove_child(s4)
+	s4.free()
 	print("UI SMOKE OK")
 	quit(0)

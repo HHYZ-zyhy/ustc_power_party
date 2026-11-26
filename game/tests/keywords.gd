@@ -147,7 +147,10 @@ func _t_field() -> void:
 	var b := _mk("math", "ai")
 	var y := _yc("实验防护", 5)
 	b.players[1].dice.append(y)
-	_basic(b)
+	# 不用 _basic()：commit 现在每回合只能提交一次，摆状态时一次提交到位
+	b.players[0].dice[3].value = 6
+	b.players[0].dice[4].value = 8
+	b.commit_selection(0, "attack", [b.players[0].dice[3], b.players[0].dice[4]])
 	b.players[1].dice[0].value = 3
 	b.commit_selection(1, "defense", [y, b.players[1].dice[0]])
 	var s: Dictionary = b.settle()
@@ -426,7 +429,9 @@ func _t_heal() -> void:
 	b.players[1].hp = 10
 	var y := _yc("军训急救", 2)
 	b.players[1].dice.append(y)
-	_basic(b)
+	b.players[0].dice[3].value = 6
+	b.players[0].dice[4].value = 8
+	b.commit_selection(0, "attack", [b.players[0].dice[3], b.players[0].dice[4]])
 	b.players[1].dice[0].value = 3
 	b.commit_selection(1, "defense", [y, b.players[1].dice[0]])
 	_check(b.players[1].hp == 13, "同值治愈 commit 即回", str(b.players[1].hp))
@@ -629,10 +634,13 @@ func _t_strength() -> void:
 	b.round = 3
 	var y := _yc("理实积淀", 2)
 	b.players[1].dice.append(y)
-	_basic(b)
+	b.players[0].dice[3].value = 6
+	b.players[0].dice[4].value = 8
+	b.commit_selection(0, "attack", [b.players[0].dice[3], b.players[0].dice[4]])
 	b.players[1].dice[0].value = 3
 	b.commit_selection(1, "defense", [y, b.players[1].dice[0]])
 	_check(b.def_value == 7, "理实积淀防御 4+3", str(b.def_value))
+	b.settle()   # round_close 现在要求先 settle
 	b.round_close()
 	_check(b.players[1].strength.size() == 1, "力量保留到下回合")
 	b.attacker = 1
@@ -813,6 +821,7 @@ func _t_earth_after() -> void:
 		"非全 6 攻击后力量设为本次攻击值 50%", str(b2.players[0].strength))
 	_check(b2.players[0].hp == 28, "非全 6 不治愈", str(b2.players[0].hp))
 	b2.round_close()
+	b2.attacker = 0   # 下回合仍由玩家 0 进攻，保持测试语义（commit 阶段必须与 attacker 一致）
 	b2.round_open()
 	b2.players[0].dice[0].value = 6
 	b2.players[0].dice[1].value = 6
@@ -846,6 +855,15 @@ func _t_reroll() -> void:
 	b.do_reroll(0, [y])
 	_check(y.face >= 0 and y.face <= 5, "曜彩骰可重投")
 	_check(y.value == GameData.YAOCAI["东风导弹"].faces[y.face].points, "曜彩点数与面表一致")
+	# 重投权限/状态守卫：非攻方次数必须清零，防守方不能重投；KO 后不能重投
+	b.players[1].rerolls = 2
+	b.round_open()
+	_check(b.rerolls_left(0) == 2 and b.rerolls_left(1) == 0,
+		"round_open 清空非攻方重投", "atk=%d def=%d" % [b.rerolls_left(0), b.rerolls_left(1)])
+	_check(b.do_reroll(1, [b.players[1].dice[0]]).is_empty(), "防守方重投被拒")
+	b.winner = 0
+	b.players[0].rerolls = 1
+	_check(b.do_reroll(0, [d]).is_empty(), "KO 后重投被拒")
 
 func _t_on_damaged_rule() -> void:
 	# 用户裁决 2026-10-13：受伤被动仅防御时、仅正式结算伤害、连击逐次判定、不含荆棘/反击等
@@ -925,6 +943,8 @@ func _t_over_count_clamp() -> void:
 	_check(b3.selection_count(0, "attack") == 2, "正常攻击等级不受影响", str(b3.selection_count(0, "attack")))
 	var b4 := _mk("shaonianban", "ai")
 	_check(b4.selection_count(0, "attack") == 0, "少年班自由选骰保持 0", str(b4.selection_count(0, "attack")))
+	b4.commit_selection(0, "attack", [])
+	_check(b4.players[0].sel.size() >= 1, "少年班空选提交兜底至少 1 颗", str(b4.players[0].sel.size()))
 
 func _t_ko_hardening() -> void:
 	# ① 双方中毒：先结算方毒发致死后，后结算方的中毒不再结算（逐迭代 winner 守卫）
@@ -986,6 +1006,51 @@ func _t_ko_hardening() -> void:
 	_check(b4.winner == 0 and b4.stats[0].fx.get("instant_per_pair", 0) == 0,
 		"KO 后 commit 被动不结算", "%d/%d" % [b4.winner, b4.stats[0].fx.get("instant_per_pair", 0)])
 
+func _t_api_guards() -> void:
+	# 2026-11-25 稳定性复查：同一回合的提交/投掷/重投/曜彩只允许一次，
+	# 防止双击或网络重放二次触发瞬伤/治愈、重掷已锁定的点数（LAN 主机校验的底层防线）
+	var b := _mk("nuclear", "ai")
+	b.players[0].dice[0].value = 4
+	b.players[0].dice[1].value = 4
+	b.players[0].dice[3].value = 2
+	b.players[0].dice[4].value = 2
+	var sel := [b.players[0].dice[0], b.players[0].dice[1], b.players[0].dice[3], b.players[0].dice[4]]
+	_check(b.commit_selection(0, "attack", sel), "首次攻击提交成功")
+	var hp_after: int = b.players[1].hp
+	_check(not b.commit_selection(0, "attack", sel), "同回合重复攻击提交被拒")
+	_check(b.players[1].hp == hp_after, "重复提交不二次触发瞬伤", "%d/%d" % [b.players[1].hp, hp_after])
+	_check(b.do_reroll(0, [b.players[0].dice[0]]).is_empty(), "提交后重投被拒")
+	# 防守方同样只能提交一次
+	var b2 := _mk("math", "ai")
+	b2.commit_selection(0, "attack", [b2.players[0].dice[3], b2.players[0].dice[4]])
+	b2.commit_selection(1, "defense", [b2.players[1].dice[0], b2.players[1].dice[1]])
+	var def_before: int = b2.def_value
+	_check(not b2.commit_selection(1, "defense", [b2.players[1].dice[2]]), "同回合重复防御提交被拒")
+	_check(b2.def_value == def_before, "重复防御提交不改攻防值", str(b2.def_value))
+	# roll_phase 每回合一次：第二次不得重掷
+	var b3 := _mk("math", "ai")
+	b3.roll_phase(0)
+	b3.players[0].dice[0].value = 0
+	b3.roll_phase(0)
+	_check(b3.players[0].dice[0].value == 0, "重复 roll_phase 不重掷", str(b3.players[0].dice[0].value))
+	# 已提交后曜彩不可用、不消耗次数、不入池
+	var b4 := _mk("physics", "ai")
+	b4.players[0].yc_name = "网络渗透"
+	b4.players[0].yc_uses = 2
+	b4.commit_selection(0, "attack", [b4.players[0].dice[0], b4.players[0].dice[1], b4.players[0].dice[2], b4.players[0].dice[3]])
+	_check(b4.yaocai_reason(0, "attack") == "本回合已提交", "提交后曜彩原因", b4.yaocai_reason(0, "attack"))
+	_check(not b4.yaocai_usable(0, "attack"), "提交后曜彩不可用")
+	var uses_before: int = b4.players[0].yc_uses
+	var dice_before: int = b4.players[0].dice.size()
+	_check(not b4.roll_yaocai(0, "attack"), "提交后投曜彩被拒")
+	_check(b4.players[0].yc_uses == uses_before and b4.players[0].dice.size() == dice_before,
+		"提交后曜彩不消耗、不入池", "%d/%d" % [b4.players[0].yc_uses, b4.players[0].dice.size()])
+	# 未结算的回合不得直接关闭（避免 accum 吃旧攻防值/在无结算情况下推进回合）
+	var b5 := _mk("math", "ai")
+	_check(not b5.round_close(), "未 settle 不得 round_close")
+	b5.settle()
+	_check(b5.round_close(), "settle 后可 round_close")
+
 func _init() -> void:
 	_t_basic()
 	_t_toughness()
@@ -1018,6 +1083,7 @@ func _init() -> void:
 	_t_earth_after()
 	_t_usable_matrix()
 	_t_reroll()
+	_t_api_guards()
 	_t_on_damaged_rule()
 	_t_on_damaged_ko()
 	_t_ko_hardening()

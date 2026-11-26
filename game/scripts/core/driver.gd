@@ -24,7 +24,10 @@ static func run_round(battle: Battle, ctrls: Array) -> Dictionary:
 				battle.do_reroll(idx, picks)
 		var count: int = battle.selection_count(idx, phase)
 		var sel: Array = ctrls[idx].choose_selection(p, phase, count)
-		battle.commit_selection(idx, phase, sel)
+		if not battle.commit_selection(idx, phase, sel):
+			# AI 异常时用空选兜底（会自动补足/截断），避免模拟在无有效提交下继续
+			if not battle.commit_selection(idx, phase, []):
+				push_error("Driver.run_round: commit 被拒绝（idx=%d phase=%s）" % [idx, phase])
 	var summary: Dictionary = battle.settle()
 	battle.round_close()
 	return summary
