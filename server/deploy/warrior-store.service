@@ -1,0 +1,29 @@
+[Unit]
+Description=科大战力党玩家数据存储服务（只存 PVE/PVP 场次与胜场）
+After=network.target
+
+[Service]
+Type=simple
+User=warrior-store
+Group=warrior-store
+WorkingDirectory=/opt/warrior-store
+EnvironmentFile=/etc/warrior-store.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m app
+Restart=on-failure
+RestartSec=2
+StateDirectory=warrior-store
+StateDirectoryMode=0700
+UMask=0077
+
+# 加固：只允许写 /var/lib/warrior-store，其余文件系统只读
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/warrior-store
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

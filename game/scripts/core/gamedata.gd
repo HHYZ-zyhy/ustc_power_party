@@ -248,7 +248,8 @@ const YAOCAI := {
 	},
 }
 
-const UPGRADE_CHAIN := [4, 6, 8, 12]
+# 骰型显示名（选卡/战斗/提示共用；骰型升级链本身只在 Die.CHAIN 定义）
+const SIDES_TEXT := {4: "四面", 6: "六面", 8: "八面", 12: "十二面"}
 
 # 关键词官方定义（照录 DESIGN.md §3，局内「效果显示」列表用，不得简写）
 const KEYWORDS := {

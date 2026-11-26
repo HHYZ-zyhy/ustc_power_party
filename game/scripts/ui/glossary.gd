@@ -18,11 +18,15 @@ var _names := {}   # 关键词 -> Label
 var _current: String = ""
 var _scroll_seq := 0   # 连点多个效果时，旧滚动协程自动作废
 
+static var _kw_sorted: Array = []
+
 static func kw_bbcode(text: String) -> String:
-	var kws: Array = GameData.KEYWORDS.keys()
-	kws.sort_custom(func(a: String, b: String) -> bool: return a.length() > b.length())
+	# 关键词表不变，按长度降序只排一次（长词先替换，避免短词截断长词）
+	if _kw_sorted.is_empty():
+		_kw_sorted = GameData.KEYWORDS.keys()
+		_kw_sorted.sort_custom(func(a: String, b: String) -> bool: return a.length() > b.length())
 	var out := text
-	for kw in kws:
+	for kw in _kw_sorted:
 		out = out.replace(kw, "[url=%s][color=#ffd66b]%s[/color][/url]" % [kw, kw])
 	return out
 
@@ -145,7 +149,12 @@ func _make_row(kw: String) -> Control:
 	_names[kw] = name_lbl
 	return row
 
+var _row_styles := {}
+
 func _row_style(highlight: bool) -> StyleBoxFlat:
+	var key := "on" if highlight else "off"
+	if _row_styles.has(key):
+		return _row_styles[key]
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0, 0, 0, 0)
 	sb.content_margin_left = 20.0
@@ -157,6 +166,7 @@ func _row_style(highlight: bool) -> StyleBoxFlat:
 		sb.bg_color = Color(1.0, 0.82, 0.32, 0.10)
 		sb.border_color = GOLD
 		sb.border_width_left = 4
+	_row_styles[key] = sb
 	return sb
 
 func _select(kw: String, scroll_to: bool) -> void:
@@ -177,7 +187,15 @@ func _scroll_to(kw: String, seq: int) -> void:
 		await get_tree().process_frame
 		if not visible or seq != _scroll_seq:
 			return
-		_scroll.scroll_vertical = maxi(0, int(row.position.y) - 6)
+		_scroll.scroll_vertical = maxi(0, int(row.position.y))
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not visible or not (event is InputEventKey):
+		return
+	var key := event as InputEventKey
+	if key.pressed and not key.echo and key.keycode == KEY_ESCAPE:
+		visible = false
+		get_viewport().set_input_as_handled()
 
 func open(kw: String = "") -> void:
 	visible = true

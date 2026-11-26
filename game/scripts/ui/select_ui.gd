@@ -8,6 +8,8 @@ var _char_btns := {}
 var _yc_btns := {}
 var _sel_char: String = ""
 var _sel_yc: String = ""
+var _starting: bool = false
+var _styles: ButtonStyles
 
 @onready var chars_grid: GridContainer = %CharsGrid
 @onready var ycs_grid: GridContainer = %YcsGrid
@@ -15,19 +17,18 @@ var _sel_yc: String = ""
 @onready var start_btn: Button = %StartBtn
 var glossary: GlossaryPanel
 
-const SIDES_TEXT := {4: "四面", 6: "六面", 8: "八面", 12: "十二面"}
-
 func _pool_text(cfg: Dictionary) -> String:
 	var parts: Array = []
-	for sides in [4, 6, 8, 12]:
+	for sides in Die.CHAIN:
 		if cfg.pool.get(sides, 0) > 0:
-			parts.append("%s骰×%d" % [SIDES_TEXT[sides], cfg.pool[sides]])
+			parts.append("%s骰×%d" % [GameData.SIDES_TEXT[sides], cfg.pool[sides]])
 	return "骰池：%s" % "、".join(parts)
 
 func _atk_text(cfg: Dictionary) -> String:
 	return "?" if cfg.atk == 0 else str(cfg.atk)
 
 func _ready() -> void:
+	_styles = ButtonStyles.new()
 	for id in GameData.CHARACTERS.keys():
 		var cfg: Dictionary = GameData.CHARACTERS[id]
 		var b := Button.new()
@@ -62,11 +63,13 @@ func _ready() -> void:
 
 func _refresh_chars() -> void:
 	for k in _char_btns:
-		_char_btns[k].modulate = Color.WHITE if (_sel_char == "" or k == _sel_char) else Color(0.6, 0.6, 0.6)
+		_styles.apply(_char_btns[k], _sel_char != "" and k == _sel_char)
 
 func _on_char(id: String) -> void:
 	if id == _sel_char:
 		return   # 重复点击已选角色不重置手动改选的曜彩
+	if not GameData.CHARACTERS.has(id):
+		return
 	_sel_char = id
 	var cfg: Dictionary = GameData.CHARACTERS[id]
 	# 用户要求：选中角色即自动选其推荐曜彩（化学无曜彩则为空；之后仍可手动改选）
@@ -76,7 +79,11 @@ func _on_char(id: String) -> void:
 	_update_info()
 
 func _on_yc(name: String) -> void:
-	if _sel_char == "" or GameData.CHARACTERS[_sel_char].yc == 0:
+	if _sel_char == "" or not GameData.CHARACTERS.has(_sel_char):
+		return
+	if int(GameData.CHARACTERS[_sel_char].yc) == 0:
+		return
+	if not GameData.YAOCAI.has(name):
 		return
 	_sel_yc = name
 	_refresh_yc()
@@ -92,11 +99,8 @@ func _refresh_yc() -> void:
 		b.disabled = disabled
 		b.text = ("★ %s" % k) if (not no_char and k == reco) else k
 		b.tooltip_text = ("本角色推荐曜彩骰（Excel H 列推荐，不强制）" if (not no_char and k == reco) else "")
-		if not no_char and k == reco:
-			b.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
-		else:
-			b.remove_theme_color_override("font_color")
-		b.modulate = Color.WHITE if (no_char or _sel_yc == "" or k == _sel_yc) else Color(0.6, 0.6, 0.6)
+		var selected: bool = not no_char and _sel_yc != "" and k == _sel_yc
+		_styles.apply(b, selected, disabled, not no_char and k == reco)
 
 # Excel H 列推荐（gamedata.yc_reco）：仅展示给玩家参考，不强制
 func _reco_line(cfg: Dictionary) -> String:
@@ -105,25 +109,35 @@ func _reco_line(cfg: Dictionary) -> String:
 	return "推荐曜彩骰：★%s（不强制）" % cfg.yc_reco
 
 func _can_start() -> bool:
-	if _sel_char == "":
+	if _sel_char == "" or not GameData.CHARACTERS.has(_sel_char):
 		return false
-	return GameData.CHARACTERS[_sel_char].yc == 0 or _sel_yc != ""
+	var cfg: Dictionary = GameData.CHARACTERS[_sel_char]
+	if int(cfg.yc) == 0:
+		return true
+	return _sel_yc != "" and GameData.YAOCAI.has(_sel_yc)
 
 func _update_info() -> void:
 	start_btn.disabled = not _can_start()
-	if _sel_char == "":
+	_styles.apply_primary(start_btn, not start_btn.disabled)
+	if _sel_char == "" or not GameData.CHARACTERS.has(_sel_char):
 		info_label.text = (GlossaryPanel.kw_bbcode("请选择角色。\n选中角色后会自动选择该角色的推荐曜彩骰，可再手动更改。"))
 		return
 	var cfg: Dictionary = GameData.CHARACTERS[_sel_char]
 	var head := "已选：%s\n%s\n%s\n%s" % [cfg.name, _pool_text(cfg), cfg.intro, _reco_line(cfg)]
-	if _sel_yc == "":
+	if _sel_yc == "" or not GameData.YAOCAI.has(_sel_yc):
 		info_label.text = (GlossaryPanel.kw_bbcode(head + "\n曜彩骰：无"))
 	else:
 		info_label.text = (GlossaryPanel.kw_bbcode(head + "\n曜彩骰：%s（%d 次/局）\n%s" % [_sel_yc, cfg.yc, GameData.YAOCAI[_sel_yc].intro]))
 
 func _on_start() -> void:
-	if not _can_start():
+	if _starting or not _can_start():
 		return
+	_starting = true
+	start_btn.disabled = true
 	GameStateData.char_id = _sel_char
 	GameStateData.yc_name = _sel_yc
-	get_tree().change_scene_to_file("res://scenes/battle.tscn")
+	var err: int = get_tree().change_scene_to_file("res://scenes/battle.tscn")
+	if err != OK:
+		_starting = false
+		start_btn.disabled = false
+		info_label.text = "[center]进入战斗失败（错误码 %d），请重试[/center]" % err

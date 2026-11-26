@@ -8,6 +8,11 @@ func _init() -> void:
 	GameStateData.yc_name = "网络渗透"
 	var ui: Node = load("res://scenes/battle.tscn").instantiate()
 	root.add_child(ui)
+	await process_frame   # 等 _ready/@onready 与 Battle.setup 完成
+	if ui.battle == null or ui.battle.players.size() != 2:
+		print("UI PLAY FAIL 战斗场景初始化失败")
+		quit(1)
+		return
 	var done := false
 	for frame in range(60000):
 		await process_frame
@@ -33,6 +38,7 @@ func _init() -> void:
 				ui._on_confirm()
 	if not done:
 		print("UI PLAY TIMEOUT round=", ui.battle.round)
-	else:
-		print("UI PLAY DONE winner=", ui.battle.winner, " round=", ui.battle.round)
+		quit(1)
+		return
+	print("UI PLAY DONE winner=", ui.battle.winner, " round=", ui.battle.round)
 	quit(0)

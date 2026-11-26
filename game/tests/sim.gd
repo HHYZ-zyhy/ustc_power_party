@@ -22,14 +22,17 @@ func _init() -> void:
 				var yc_pool: Array = GameData.YAOCAI.keys()
 				var yc_a: String = "" if GameData.CHARACTERS[ids[i]].yc == 0 else yc_pool[rng.randi_range(0, yc_pool.size() - 1)]
 				var yc_b: String = "" if GameData.CHARACTERS[ids[j]].yc == 0 else yc_pool[rng.randi_range(0, yc_pool.size() - 1)]
-				battle.setup([ids[i], ids[j]], [yc_a, yc_b], rng)
+				if not battle.setup([ids[i], ids[j]], [yc_a, yc_b], rng):
+					push_error("sim: Battle.setup 失败 %s/%s" % [ids[i], ids[j]])
+					continue
 				var w := Driver.run_game(battle, [AIController.new(), AIController.new()])
 				var winner_id: String = ids[i] if w == 0 else ids[j]
 				wins[winner_id] += 1
 				games[ids[i]] += 1
 				games[ids[j]] += 1
-				rounds_sum[ids[i]] += battle.round
-				rounds_sum[ids[j]] += battle.round
+				# round_close 无条件 +1，实际打完的回合数 = battle.round - 1
+				rounds_sum[ids[i]] += battle.round - 1
+				rounds_sum[ids[j]] += battle.round - 1
 	print("=== balance sim ===")
 	for id in ids:
 		var total: int = games[id]

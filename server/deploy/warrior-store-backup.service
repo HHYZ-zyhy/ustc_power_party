@@ -1,0 +1,25 @@
+[Unit]
+Description=科大战力党玩家数据存储服务：SQLite 一致性快照备份（由 warrior-store-backup.timer 触发）
+After=warrior-store.service
+ConditionPathExists=/var/lib/warrior-store/store.sqlite3
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30min
+User=warrior-store
+Group=warrior-store
+WorkingDirectory=/opt/warrior-store
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/warrior-store/deploy/backup.py --db /var/lib/warrior-store/store.sqlite3 --out-dir /var/lib/warrior-store/backups --keep 14
+StateDirectory=warrior-store
+StateDirectoryMode=0700
+UMask=0077
+
+# 加固：备份目录在 StateDirectory 内，只允许写 /var/lib/warrior-store
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/warrior-store
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

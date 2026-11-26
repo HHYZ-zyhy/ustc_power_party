@@ -1,0 +1,11 @@
+[Unit]
+Description=科大战力党玩家数据存储服务：每天 04:00 自动备份（随机延迟最多 5 分钟）
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=warrior-store-backup.service
+
+[Install]
+WantedBy=timers.target

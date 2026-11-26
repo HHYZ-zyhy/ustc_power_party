@@ -19,11 +19,18 @@ var stats: Array = []
 # 逐次掉血事件（界面飘字/闪红用）：{target: 受击方索引, amount: 实际扣血, kind: main/combo/counter/instant/thorns/poison}
 # damage() 是唯一扣血入口，事件按发生顺序累积，界面自行记录已消费位置
 var hits: Array = []
+# 稳定性守卫：每回合 settle/round_close 只允许一次，round_open 重置；
+# 提交/投掷的幂等分别由玩家字段 sel（非空=已提交）与 rolled（本回合已 roll_phase）判定
+var _settled: bool = false
+var _closed: bool = false
+
+func _valid_idx(idx: int) -> bool:
+	return idx >= 0 and idx < players.size()
 
 func _make_player(char_id: String, yc_name: String) -> Dictionary:
 	var cfg: Dictionary = GameData.CHARACTERS[char_id]
 	var dice: Array = []
-	for sides in [4, 6, 8, 12]:
+	for sides in Die.CHAIN:
 		for i in range(cfg.pool[sides]):
 			var d := Die.new()
 			d.sides = sides
@@ -36,20 +43,49 @@ func _make_player(char_id: String, yc_name: String) -> Dictionary:
 		"unyielding_round": false, "unyielding_used": false,
 		"leap_perm": false, "leap_round": false,
 		"yc_name": yc_name, "yc_uses": cfg.yc, "yc_rolled": false, "yc_triggered": 0,
-		"accum": 0, "face_counts": {1: 0, 4: 0},
-		"sel": [], "rerolls": 0, "hack_pending": false,
+			"accum": 0, "face_counts": {1: 0, 4: 0},
+			"sel": [], "rerolls": 0, "rolled": false, "hack_pending": false,
 	}
 
-func setup(char_ids: Array, yc_names: Array, rng_obj: GameRng) -> void:
+func setup(char_ids: Array, yc_names: Array, rng_obj: GameRng) -> bool:
+	# 入口校验：非法角色/曜彩/随机源直接拒绝，避免 _make_player 裸下标崩溃
+	if rng_obj == null or char_ids.size() != 2 or yc_names.size() != 2:
+		return false
+	for id in char_ids:
+		if not GameData.CHARACTERS.has(str(id)):
+			return false
+	var safe_yc: Array = []
+	for i in range(2):
+		var yc: String = str(yc_names[i])
+		if yc != "" and not GameData.YAOCAI.has(yc):
+			return false
+		# 无曜彩角色即使传入曜彩名也不生效（选卡界面正常流程不会传）
+		if int(GameData.CHARACTERS[str(char_ids[i])].yc) == 0:
+			yc = ""
+		safe_yc.append(yc)
 	rng = rng_obj
-	players = [_make_player(char_ids[0], yc_names[0]), _make_player(char_ids[1], yc_names[1])]
+	# 允许在同一对象上重开一局：日志/掉血事件/胜负/回合数全部归零
+	log = []
+	hits = []
+	winner = -1
+	round = 1
+	_settled = false
+	_closed = false
+	_ctx_a = _empty_ctx()
+	_ctx_d = _empty_ctx()
+	atk_value = 0
+	def_value = 0
+	players = [_make_player(str(char_ids[0]), str(safe_yc[0])),
+		_make_player(str(char_ids[1]), str(safe_yc[1]))]
 	stats = [
 		{"dmg_dealt": 0, "dmg_taken": 0, "fx": {}},
 		{"dmg_dealt": 0, "dmg_taken": 0, "fx": {}},
 	]
 	attacker = rng.coin_flip()
+	return true
 
-func _pool_n(p: Dictionary) -> int:
+# 普通骰总数：攻/防等级上限与选骰数封顶的唯一口径
+static func pool_count(p: Dictionary) -> int:
 	var n := 0
 	for k in p.cfg.pool:
 		n += p.cfg.pool[k]
@@ -62,10 +98,10 @@ func atk_eff(p: Dictionary) -> int:
 	else:
 		base = p.cfg.atk + p.atk_perm
 	# 等级增加上限 = 角色普通骰子数量（用户裁决 2026-10-13）
-	return mini(base, _pool_n(p))
+	return mini(base, pool_count(p))
 
 func def_eff(p: Dictionary) -> int:
-	return mini(p.cfg.def + p.def_perm, _pool_n(p))
+	return mini(p.cfg.def + p.def_perm, pool_count(p))
 
 func strength_total(p: Dictionary) -> int:
 	var s := 0
@@ -74,11 +110,19 @@ func strength_total(p: Dictionary) -> int:
 	return s
 
 func heal(p: Dictionary, n: int) -> void:
+	if winner >= 0:
+		return   # KO 后所有效果停止（含治疗）
 	if n <= 0 or p.hp <= 0:
 		return   # 已阵亡不复活（KO 后所有效果停止）
 	p.hp = mini(p.hp + n, p.hp_max)
 
 func damage(p: Dictionary, n: int, idx: int, dealer: int = -1, kind: String = "") -> int:
+	if not _valid_idx(idx):
+		return 0
+	if dealer >= 0 and not _valid_idx(dealer):
+		return 0
+	if winner >= 0:
+		return 0
 	if n <= 0 or p.hp <= 0:
 		return 0
 	var before: int = p.hp
@@ -99,7 +143,15 @@ func damage(p: Dictionary, n: int, idx: int, dealer: int = -1, kind: String = ""
 		log.append("KO: player%d" % idx)
 	return actual
 
-func _pairs_count(values: Array) -> int:
+# 骰点总和：结算、AI、界面预览/总计共用的唯一口径
+static func dice_sum(dice: Array) -> int:
+	var s := 0
+	for d in dice:
+		s += d.value
+	return s
+
+# 对子数（按值分组后每组 floor(数量/2) 之和）：结算与 AI 估值共用的唯一口径
+static func pairs_count(values: Array) -> int:
 	var counts := {}
 	for v in values:
 		counts[v] = counts.get(v, 0) + 1
@@ -108,7 +160,8 @@ func _pairs_count(values: Array) -> int:
 		pairs += int(counts[v]) / 2
 	return pairs
 
-func eval_cond(c: Dictionary, p: Dictionary, sel: Array, ctx: Dictionary) -> bool:
+# 纯函数：只读条件定义、玩家状态、本次选择与上下文；AI 估值与界面预期效果共用
+static func eval_cond(c: Dictionary, p: Dictionary, sel: Array, ctx: Dictionary) -> bool:
 	var values: Array = []
 	for d in sel:
 		values.append(d.value)
@@ -126,14 +179,14 @@ func eval_cond(c: Dictionary, p: Dictionary, sel: Array, ctx: Dictionary) -> boo
 				if v != c.v:
 					return true
 			return false
-		"pairs_ge": return _pairs_count(values) >= c.n
+		"pairs_ge": return pairs_count(values) >= c.n
 		"full_hp": return p.hp == p.hp_max
 		"all_even":
 			for v in values:
 				if v % 2 != 0:
 					return false
 			return values.size() > 0
-		"has_pair": return _pairs_count(values) >= 1
+		"has_pair": return pairs_count(values) >= 1
 		"all_same":
 			for v in values:
 				if v != values[0]:
@@ -147,6 +200,9 @@ func eval_cond(c: Dictionary, p: Dictionary, sel: Array, ctx: Dictionary) -> boo
 	return false
 
 func apply_fx(fx: Dictionary, holder: Dictionary, holder_idx: int, opp: Dictionary, ctx: Dictionary) -> void:
+	# ctx 允许是最小上下文（on_damaged/round_end 不建完整 commit 上下文）：缺键补默认值
+	if not ctx.has("flags"):
+		ctx["flags"] = {}
 	var flags: Dictionary = ctx.flags
 	stats[holder_idx].fx[fx.op] = stats[holder_idx].fx.get(fx.op, 0) + 1
 	match fx.op:
@@ -155,12 +211,12 @@ func apply_fx(fx: Dictionary, holder: Dictionary, holder_idx: int, opp: Dictiona
 		"pierce": flags.pierce = true
 		"atk_add": ctx.bonus = ctx.get("bonus", 0) + fx.n
 		"upgrade_sel":
-			for d in ctx.sel:
+			for d in ctx.get("sel", []):
 				if not d.is_yaocai():
 					d.upgrade()
 		"hack": holder.hack_pending = true
 		"instant": damage(opp, fx.n, 1 - holder_idx, holder_idx, "instant")
-		"instant_per_pair": damage(opp, _pairs_count(ctx.values) * fx.n, 1 - holder_idx, holder_idx, "instant")
+		"instant_per_pair": damage(opp, pairs_count(ctx.get("values", [])) * fx.n, 1 - holder_idx, holder_idx, "instant")
 		"thorns": holder.thorns += fx.n
 		"field": holder.field = true
 		"unyielding": holder.unyielding_round = true
@@ -168,10 +224,10 @@ func apply_fx(fx: Dictionary, holder: Dictionary, holder_idx: int, opp: Dictiona
 			if not holder.unyielding_used:
 				holder.unyielding_used = true
 				holder.unyielding_round = true
-		"heal_same": heal(holder, ctx.face_points)
+		"heal_same": heal(holder, int(ctx.get("face_points", 0)))
 		"heal": heal(holder, fx.n)
 		"strength": holder.strength.append({"n": fx.n, "expire": round + 1})
-		"strength_set": holder.strength = [{"n": int(ctx.atk_value * fx.pct / 100.0), "expire": -1}]
+		"strength_set": holder.strength = [{"n": int(int(ctx.get("atk_value", 0)) * fx.pct / 100.0), "expire": -1}]
 		"leech": flags.leech = fx.pct
 		"yaocai_use_add":
 			if not holder.yc_rolled:
@@ -188,10 +244,14 @@ func apply_fx(fx: Dictionary, holder: Dictionary, holder_idx: int, opp: Dictiona
 		"mingding": pass
 
 func yaocai_usable(idx: int, phase: String) -> bool:
+	if not _valid_idx(idx):
+		return false
 	if winner >= 0:
 		return false   # 一方 KO 后所有效果不再结算（用户裁决 2026-10-16）
 	var p: Dictionary = players[idx]
-	if p.yc_name == "" or p.yc_uses <= 0 or p.yc_rolled:
+	if not p.sel.is_empty():
+		return false   # 本回合已提交：选骰已锁定，不能再补投曜彩
+	if p.yc_name == "" or not GameData.YAOCAI.has(p.yc_name) or p.yc_uses <= 0 or p.yc_rolled:
 		return false
 	var use: Dictionary = GameData.YAOCAI[p.yc_name].use
 	match use.t:
@@ -204,11 +264,17 @@ func yaocai_usable(idx: int, phase: String) -> bool:
 
 # 不可用原因（中文，供界面提示）；返回 "" 表示当前可用，判定与 yaocai_usable 一致
 func yaocai_reason(idx: int, phase: String) -> String:
+	if not _valid_idx(idx):
+		return "无效玩家"
 	if winner >= 0:
 		return "对局已结束"
 	var p: Dictionary = players[idx]
+	if not p.sel.is_empty():
+		return "本回合已提交"
 	if p.yc_name == "":
 		return "无曜彩骰"
+	if not GameData.YAOCAI.has(p.yc_name):
+		return "曜彩配置无效"
 	if p.yc_uses <= 0:
 		return "次数已用完"
 	if p.yc_rolled:
@@ -239,10 +305,10 @@ func yaocai_reason(idx: int, phase: String) -> String:
 			return ""
 	return "当前不可用"
 
-func roll_yaocai(idx: int, phase: String) -> void:
+func roll_yaocai(idx: int, phase: String) -> bool:
 	# 兜底：次数/本回合已投/使用条件/胜负任一不满足都不消耗、不入池
 	if not yaocai_usable(idx, phase):
-		return
+		return false
 	var p: Dictionary = players[idx]
 	var d := Die.new()
 	d.yaocai = p.yc_name
@@ -252,26 +318,44 @@ func roll_yaocai(idx: int, phase: String) -> void:
 	p.yc_rolled = true
 	stats[idx].fx["yaocai"] = stats[idx].fx.get("yaocai", 0) + 1
 	log.append("yc roll p%d %s face%d=%d" % [idx, p.yc_name, d.face, d.value])
+	return true
 
 func rerolls_left(idx: int) -> int:
+	if not _valid_idx(idx):
+		return 0
 	return players[idx].rerolls
 
 func do_reroll(idx: int, dice: Array) -> Array:
-	if dice.is_empty() or players[idx].rerolls <= 0:
+	if not _valid_idx(idx) or winner >= 0 or idx != attacker:
 		return []
+	var p: Dictionary = players[idx]
+	if not p.sel.is_empty():
+		return []   # 已提交：选骰点数锁定，不能再重投改写
+	if dice.is_empty() or p.rerolls <= 0:
+		return []
+	# 严格只接受本方骰子；传入对方骰/非骰对象直接拒绝，避免重投对方骰
+	var picks: Array = []
+	for d in dice:
+		if not p.dice.has(d):
+			return []
+		if not picks.has(d):
+			picks.append(d)
 	# 命定曜彩骰无法取消选中：只要发生重投，就必须把它一起重投（用户 2026-11-11 澄清）。
 	# 返回值是实际重投的骰子，调用方应以它驱动 3D 演出，避免漏演强制加入的命定骰。
-	var picks: Array = dice.duplicate()
-	for d in players[idx].dice:
+	for d in p.dice:
 		if is_mingding(d) and not picks.has(d):
 			picks.append(d)
+	if picks.is_empty():
+		return []
 	for d in picks:
 		d.roll(rng)
-	players[idx].rerolls -= 1
+	p.rerolls -= 1
 	stats[idx].fx["reroll"] = stats[idx].fx.get("reroll", 0) + 1
 	return picks
 
 func selection_count(idx: int, phase: String) -> int:
+	if not _valid_idx(idx) or (phase != "attack" and phase != "defense"):
+		return 0
 	var p: Dictionary = players[idx]
 	var n: int
 	if phase == "attack":
@@ -280,12 +364,14 @@ func selection_count(idx: int, phase: String) -> int:
 		n = def_eff(p) + p.def_pending
 	# 等级增加上限 = 普通骰子数量（用户裁决 2026-10-13）；再钳制到本回合实际可用骰数
 	# （被动可令攻/防等级无限累积——数学洞穿+1、AI学院受伤+1，超池则人类软锁、AI 枚举越界）
-	n = mini(n, _pool_n(p))
+	n = mini(n, pool_count(p))
 	return mini(n, p.dice.size())
 
 # 曜彩骰当前面是否带「命定」：投出后必须被选中，且重投时不能被排除在外
 func is_mingding(d: Die) -> bool:
-	if not d.is_yaocai() or d.face < 0:
+	if not d.is_yaocai() or d.face < 0 or d.face >= 6:
+		return false
+	if not GameData.YAOCAI.has(d.yaocai):
 		return false
 	for fx in GameData.YAOCAI[d.yaocai].faces[d.face].fx:
 		if fx.op == "mingding":
@@ -304,11 +390,24 @@ func _enforce_mingding(p: Dictionary, sel: Array, count: int) -> Array:
 				sel.erase(worst)
 	return sel
 
-func commit_selection(idx: int, phase: String, sel_in: Array) -> void:
+func commit_selection(idx: int, phase: String, sel_in: Array) -> bool:
+	if not _valid_idx(idx):
+		return false
+	if phase != "attack" and phase != "defense":
+		return false
+	if phase != ("attack" if idx == attacker else "defense"):
+		return false
 	var p: Dictionary = players[idx]
+	if not p.sel.is_empty():
+		return false   # 本回合已提交：禁止二次提交（防双击/网络重放二次触发瞬伤、治愈、被动）
 	var opp: Dictionary = players[1 - idx]
 	var count := selection_count(idx, phase)
-	var sel: Array = sel_in.duplicate()
+	# 严格只接受本方骰子；重复项/对方骰/非骰对象直接拒绝
+	var sel: Array = []
+	for d in sel_in:
+		if not p.dice.has(d) or sel.has(d):
+			return false
+		sel.append(d)
 	if count > 0:
 		while sel.size() > count:
 			sel.pop_back()
@@ -321,7 +420,14 @@ func commit_selection(idx: int, phase: String, sel_in: Array) -> void:
 					break
 			if not added:
 				break
+	elif sel.is_empty() and not p.dice.is_empty():
+		# 少年班自由选骰的规则下限是「至少 1 颗」；空选会让 count_le 误触发连击
+		sel.append(p.dice[0])
 	sel = _enforce_mingding(p, sel, count)
+	# 曜彩面效果表下标守卫（非法曜彩/面号直接拒绝，避免 faces[face] 越界）
+	for d in sel:
+		if d.is_yaocai() and (not GameData.YAOCAI.has(d.yaocai) or d.face < 0 or d.face >= 6):
+			return false
 	if phase == "defense":
 		p.counter_round = p.counter_pending
 		p.counter_pending = false
@@ -360,10 +466,7 @@ func commit_selection(idx: int, phase: String, sel_in: Array) -> void:
 						break
 					apply_fx(fx, p, idx, opp, ctx)
 	if phase == "attack":
-		var sum := 0
-		for d in sel:
-			sum += d.value
-		atk_value = sum + strength_total(p) + ctx.get("bonus", 0)
+		atk_value = dice_sum(sel) + strength_total(p) + ctx.get("bonus", 0)
 		ctx.atk_value = atk_value
 		if winner < 0:
 			for pas in p.cfg.passives:
@@ -378,26 +481,39 @@ func commit_selection(idx: int, phase: String, sel_in: Array) -> void:
 						apply_fx(fx, p, idx, opp, ctx)
 		_ctx_a = ctx
 	else:
-		var sum := 0
-		for d in sel:
-			sum += d.value
-		def_value = sum + p.toughness + ctx.get("bonus", 0)
+		def_value = dice_sum(sel) + p.toughness + ctx.get("bonus", 0)
 		_ctx_d = ctx
+	return true
 
 func round_open() -> void:
+	if players.size() != 2:
+		return
+	if attacker < 0 or attacker >= players.size():
+		push_error("Battle.round_open: attacker 越界 %d，重置为 0" % attacker)
+		attacker = 0
+	_settled = false
+	_closed = false
 	# 清掉上一回合的上下文，避免防御阶段被跳过（攻方 commit 瞬伤致胜）时
 	# settle 仍读到上一回合的 bonus/攻防值
-	_ctx_a = {}
-	_ctx_d = {}
+	_ctx_a = _empty_ctx()
+	_ctx_d = _empty_ctx()
 	atk_value = 0
 	def_value = 0
 	for p in players:
 		p.leap_round = p.leap_perm
 		p.sel = []
+		p.rerolls = 0   # 防守方/上回合残留的重投次数不得带进新回合
+		p.rolled = false   # 每回合每人只允许 roll_phase 一次
 	players[attacker].rerolls = 2
 
 func roll_phase(idx: int) -> void:
-	for die in players[idx].dice:
+	if not _valid_idx(idx) or winner >= 0:
+		return
+	var p: Dictionary = players[idx]
+	if p.rolled:
+		return   # 重复投掷：点数已确定，不得再次随机改写
+	p.rolled = true
+	for die in p.dice:
 		if not die.is_yaocai():
 			die.roll(rng)
 
@@ -440,28 +556,34 @@ func _apply_hacks() -> void:
 			var pick: Die = targets[rng.randi_range(0, targets.size() - 1)]
 			pick.value = 2
 
+func _empty_summary() -> Dictionary:
+	return {"dmg": 0, "dmg2": 0, "combo_n": 0, "counter": 0, "atk": 0, "def": 0, "pierce": false}
+
+func _empty_ctx() -> Dictionary:
+	# settle 在 commit 前被调用（非法/异常路径）时也要有可读的 flags，不能是空字典
+	return {"flags": {}, "sel": [], "values": [], "atk_value": 0, "bonus": 0, "face_points": 0}
+
 # 结算顺序：跃升/骇入先改点 → 重算攻防值 → 荆棘 → 主伤害/连击/洞穿/反击 → 攻击后被动 → 中毒
 # 跃升与骇入同时结算时先跃升后骇入（用户裁决 2026-10-16）：骇入会把跃升刚升上来的骰打掉
 # 任何改骰点数的效果必须放在求和之前，否则伤害用旧值（骇入曾因此失效）
 func settle() -> Dictionary:
+	if players.size() != 2 or not _valid_idx(attacker):
+		return _empty_summary()
+	if _settled:
+		return _empty_summary()   # 同一回合重复 settle 不二次结算
+	_settled = true
 	var a := attacker
 	var d := 1 - a
 	var A: Dictionary = players[a]
 	var D: Dictionary = players[d]
-	var summary := {"dmg": 0, "dmg2": 0, "combo_n": 0, "counter": 0, "atk": 0, "def": 0, "pierce": false}
+	var summary := _empty_summary()
 	# commit 阶段瞬伤可能已分出胜负：跃升/骇入也属于「效果」，KO 后不得再改点
 	if winner < 0:
 		_apply_leap(a)
 		_apply_leap(d)
 		_apply_hacks()
-	var sa := 0
-	for die in A.sel:
-		sa += die.value
-	atk_value = sa + strength_total(A) + _ctx_a.get("bonus", 0)
-	var sd := 0
-	for die in D.sel:
-		sd += die.value
-	def_value = sd + D.toughness + _ctx_d.get("bonus", 0)
+	atk_value = dice_sum(A.sel) + strength_total(A) + _ctx_a.get("bonus", 0)
+	def_value = dice_sum(D.sel) + D.toughness + _ctx_d.get("bonus", 0)
 	summary.atk = atk_value
 	summary.def = def_value
 	summary.pierce = _ctx_a.flags.get("pierce", false)
@@ -553,7 +675,14 @@ func _eval_on_damaged(D: Dictionary, d: int, A: Dictionary, a: int, dmg: int) ->
 				else:
 					apply_fx(fx, D, d, A, {"flags": {}, "sel": D.sel, "values": [], "atk_value": 0, "bonus": 0})
 
-func round_close() -> void:
+func round_close() -> bool:
+	if players.size() != 2 or not _valid_idx(attacker):
+		return false
+	if not _settled:
+		return false   # 必须先 settle 再关回合：避免 accum 吃旧攻防值/在无结算情况下推进回合
+	if _closed:
+		return false   # 同一回合重复 round_close 不二次加 accum/触发被动/增回合
+	_closed = true
 	var a := attacker
 	var d := 1 - a
 	players[a].accum += atk_value
@@ -564,8 +693,12 @@ func round_close() -> void:
 		# 回合结束被动同口径：一方 KO 后不再结算（用户裁决 2026-10-16）
 		if winner < 0:
 			for pas in p.cfg.passives:
+				if winner >= 0:
+					break
 				if pas.t == "round_end" and eval_cond(pas.c, p, p.sel, {"atk_value": atk_value}):
 					for fx in pas.fx:
+						if winner >= 0:
+							break
 						apply_fx(fx, p, idx, opp, {"flags": {}, "sel": [], "values": [], "atk_value": atk_value, "bonus": 0})
 	for p in players:
 		var keep: Array = []
@@ -585,3 +718,4 @@ func round_close() -> void:
 		p.dice = keep_dice
 	attacker = 1 - attacker
 	round += 1
+	return true
