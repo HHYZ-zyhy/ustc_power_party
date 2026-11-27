@@ -1,9 +1,15 @@
 # D:\warrior party — 文件夹说明
 
 > 科大战力党（骰子对战游戏）项目根目录。接手先读 `AGENTS.md`（硬规则速查），再读 `CONTEXT.md`（背景与架构），规则读 `DESIGN.md`，Godot 操作读 `GODOT_GUIDE.md`。本文件是**项目概览与文件夹用途登记表**，新添文件必须在此登记一行。
-> 最后校订：2026-11-26（选骰 UI 第五轮微调；无规则/数值改动）
+> 最后校订：2026-11-27（第三轮全量代码审查与优化；无规则/数值改动）
 >
 > **最近更新**
+> - 2026-11-27 提示逻辑去重（无行为变化）：`_sel_ready()`（就绪判断唯一）、`_hint_passives()`（提示被动三重过滤唯一）、`_yaocai_face_fx()`（曜彩面效果取表唯一）、`_fx_hint_ok()`（不屈一次性过滤）；浅色提示与金色加深共用，`_die_fx_hints()` 预计算提示被动并复用求值 ctx。
+> - 2026-11-27 骰下提示两态：取消面数标注（六面/四面等只在悬停 tooltip 保留），普通骰只列可能效果——未选中浅灰蓝、确定会生效时金色（对子类选中对子即金且只金凑对骰；全偶数/全相同/全为某值须选满才金）；网安/工程不逐骰标注，地球只标全 6 的力量×100%+治愈，生命不屈用后不显示；`_die_lit_fx()` 逐骰判定归属，`_active_fx()` 供「预期效果」行；`GlossaryPanel.kw_bbcode()` 支持颜色参数。
+> - 2026-11-27 选中骰高光：`DieVisuals.selected_material_for()` 为选中骰按骰型+基色单独缓存材质变体（粗糙度 0.50、镜面 0.40、自发光 +0.05），`DieView._apply_material()` 只切换 `material_override`；未选中骰与投骰演出不变，骰体保持不透明。
+> - 2026-11-27 第三轮：修受伤被动瞬伤漏记战绩、骇入跨回合残留、投骰计时器生命周期；统一 `FX_NAMES`/`_damage_after_defense()`/`_selection_ready()`/`_enemy_selected()`，复用 `_face_basis()` 并删除死函数；keywords 增至 1207。同日收尾：曜彩可用性收敛为 `yaocai_reason()` 单一来源，面号上限改取曜彩面表长度。
+> - 2026-11-27 第二轮：d8 静姿倾角压到 `-8°`（结果面正视玩家）、d6 略减到 `-14°`，d4/d12 保持；选骰阶段在页面中心用蓝圈实时显示我方/敌方当前选骰合计（敌方提交后显示 0.9s）。
+> - 2026-11-27 骰面修复：静态 3D 骰按投影包围盒居中并按骰型自动放大正交 `size`（d8 约 2.5），修 d4/d8/d12 顶尖/边角被 SubViewport 裁切；八面骰主色改为 `#FDB26B`。
 > - 2026-11-26 选骰 UI 第五轮：选中金边壳层 1.06→1.10 加粗；DiceTip 上提 16px（y664–692）；敌方骰块移出敌方信息条，放到框外名字正下方（96×132、`GridContainer` 5 列、第 6 颗换行、来源标题行右侧「总计 N」；与玩家骰共用同一 `display_rotation`/正交镜头/灯光/材质）。
 > - 2026-11-26 代码整理：抽出 `ButtonStyles` 共用按钮样式、`DieVisuals.make_die_instance()` 共用骰体+刻字装配、`_obtain_view()/_prune_views()` 共用骰行池化、`_phase_passives()` 共用阶段被动过滤；`select_ui`/`battle_ui`/`die_view`/`dice_roll` 已接入。验证链见下。
 > - 2026-11-26 3D 骰外观：数字贴面、骰体全不透明、d6/曜彩官方 `BoxMesh` + d4/d8/d12 精确正多面体、`CULL_FRONT` 不透明反壳描边；选骰静态视图改为「结果面正对玩家 + 绕屏幕水平轴 18° 上仰（d4/d8 三角面 28°）」（正交镜头 size 2.0，露出底面/侧面）；敌方骰块为玩家骰行的 96×132 缩小版（提示/总计/不可点击）。
@@ -18,8 +24,8 @@
 - **技术**：Godot 4.7.2 + GDScript；2D 主界面 + 投骰、选骰与敌方骰子 3D；当前为单机 PVE（贪心 AI），下一步做局域网 1v1。独立玩家数据存储服务端 `server/`（Python 3 标准库 + SQLite）**2026-11-25 起暂缓**，保持原样、不参与游戏运行。
 - **规模**：12 角色、11 曜彩骰、18 个关键词；规则见 `DESIGN.md` §1/§3，数值见 `参考素材/角色，骰子参数.xlsx`。
 - **运行**：`Godot_v4.7.2-stable_win64.exe --path "D:\warrior party\game"`（开窗游玩；从选卡界面开始）。
-- **验证**：`cd game` → `keywords.gd`（应 `KEYWORDS pass=1206 fail=0`）→ `sim.gd`（12 行胜率表）→ `ui_play.gd`（应 `UI PLAY DONE`）→ `ui_smoke.gd`（应 `UI SMOKE OK`）→ `soak.gd`（应 `SOAK OK`）→ `fuzz_actions.gd`（应 `FUZZ OK`）→ `ui_stress.gd`（开窗，应 `UI STRESS OK`）；改布局再跑 `shot.gd` 六图（含选中态 `shot_dice_selected.png`）。详见 `GODOT_GUIDE.md` §3。
-- **当前状态**：v1 PVE 全流程可玩（选卡 → 战斗 → 终局战绩页）；2026-11-26 完成代码整理轮（共享按钮样式/骰体装配/骰行池化/阶段被动过滤，无规则数值改动）与 3D 骰外观/对手骰行重做（数字贴面、全不透明、精确正多面体、选骰静态视图结果面朝玩家 + 18°/28° 上仰（正交镜头 size 2.0）、敌方 96×132 缩小行）；验证链全绿，待开窗确认。
+- **验证**：`cd game` → `keywords.gd`（应 `KEYWORDS pass=1207 fail=0`）→ `sim.gd`（12 行胜率表）→ `ui_play.gd`（应 `UI PLAY DONE`）→ `ui_smoke.gd`（应 `UI SMOKE OK`）→ `soak.gd`（应 `SOAK OK`）→ `fuzz_actions.gd`（应 `FUZZ OK`）→ `ui_stress.gd`（开窗，应 `UI STRESS OK`）；改布局再跑 `shot.gd` 六图（含选中态 `shot_dice_selected.png`）。详见 `GODOT_GUIDE.md` §3。
+- **当前状态**：v1 PVE 全流程可玩（选卡 → 战斗 → 终局战绩页）；2026-11-26 完成代码整理轮（共享按钮样式/骰体装配/骰行池化/阶段被动过滤，无规则数值改动）与 3D 骰外观/对手骰行重做（数字贴面、全不透明、精确正多面体、选骰静态视图结果面朝玩家 + 按骰型上仰（正交镜头 size 2.0）、敌方 96×132 缩小行）；2026-11-27 加入静姿倾角按骰型（d8 -8° 正视）与页面中心选骰合计蓝圈，并完成第三轮代码审查与优化（3 处修复、共享助手去重、keywords 1207）；验证链全绿，待开窗确认。
 - **下一步**：P1 稳定性收尾 → P2 局域网 1v1（自动发现 + 手动 IP、昵称、会话胜负统计、再来一局）→ P3 AI → P4 美术；云服务/战绩存储暂停（`server/` 原样保留）。已知缺口见 `DESIGN.md` §11 与 `CONTEXT.md` §9。
 - **约定**：数值归用户（xlsx 唯一权威）；随机只用 Crypto；不用 autoload；git 提交由用户负责。
 
@@ -95,7 +101,8 @@ game/
                        敌方骰块在框外、名字正下方（GridContainer 5 列、第 6 颗换行；96×132 缩小版，带骰下提示、不可点击、
                        来源标题行右侧「总计 N」，块宽上限 884 不压居中横幅）/
                        横幅+预期效果中上（预期效果居中）/
-                       投骰 3D 子视口 RollView 居中透明 / 选骰提示 DiceTip y664–692 + 骰子候选 DiceRow x±700、y720–870
+                       投骰 3D 子视口 RollView 居中透明 / 页面中心选骰合计 SelSum（蓝圈 + 我方/敌方当前合计，仅在选骰阶段显示）/
+                       选骰提示 DiceTip y664–692 + 骰子候选 DiceRow x±700、y720–870
                        （DieView 3D 骰，选中金边加粗 + 骰下 16px 提示）/ 玩家信息条底部（名字/HP/曜彩行 + 被动 + 状态独立成行）/
                        操作按钮右列（曜彩/重投/确认；确认按已选/需选数启用）/
                        曜彩六面表弹窗 YcPopup（全屏遮罩 + 点外部关闭）/ 终局战绩汇总页 SummaryView（65% 黑色遮罩 + 按内容高度 + 三列表格 + 返回按钮金色）
@@ -123,7 +130,7 @@ game/
       select_ui.gd     选卡逻辑：初始空选、选中角色自动带推荐、上局返回恢复；1280px 居中布局、骰池构成行、攻?显示、
                        推荐曜彩星标与信息栏（yc_reco）、化学禁曜彩、开始按钮金色启用态（ButtonStyles.apply_primary）
       button_styles.gd ButtonStyles：选卡页与战斗页共用的按钮样式（选中金边/推荐金字/禁用暗色/主操作金色启用态）
-      battle_ui.gd     战斗界面逻辑（人类=玩家0 异步编排）：中文效果文案映射、命定锁定（不可取消选中、重投必带）、升序排骰、
+      battle_ui.gd     战斗界面逻辑（人类=玩家0 异步编排）：中文效果文案映射（FX_NAMES 唯一映射）、命定锁定（不可取消选中、重投必带）、升序排骰、
                        选中即重投（带 1.3s 3D 翻滚短动画）、攻方 commit 致死后跳过阵亡方防御阶段、双方 HP 进度条（#E9517D）、掉血闪红+飘字（主伤害/连击/反击/瞬伤/荆棘/中毒）、
                        曜彩六面表卡片（3×2）+ 曜彩/战绩面板窄窗自适应 + 开关式 + 不可用原因、攻/防等级角标（随 refresh 更新）、
                        状态栏独立成行（荆棘待结算/力场/不屈/中毒/力量/跃升，长文本不挤 HP 条）、信息栏 20/8px 内边距（_pad_info_bar，防文字贴边/越界）、
@@ -141,25 +148,29 @@ game/
       dice_roll.gd     投骰 3D 演出（SubViewport 透明背景，普通投骰约 2.3s、重投 quick 约 1.3s；真骰型 d4 正四面体/
                        d6 立方/d8 正八面体/d12 正十二面体，d6/曜彩用官方 BoxMesh、其余精确正多面体；每个面挂贴面 Label3D，
                        翻滚后停在所掷点数面；骰体明显放大，镜头按骰数推近；骰型同色系；旋转随机走 Crypto；
+                       演出计时帧驱动（不用 SceneTreeTimer，场景释放即返回）；重入令牌防旧协程重复 finished；
                        面数据/网格/材质/刻字/灯光复用 DieVisuals 静态缓存，本文件只做演出编排；
                        曜彩骰为蓝紫立方并刻实际面点数，普通骰与曜彩共用同一 roll() 接口）
       die_visuals.gd    3D 骰几何/材质/刻字/停骰姿态 + 共用灯光/环境光（DieVisuals 静态类，按骰型静态缓存；
                         骰体全不透明、数字贴面、d4 逐面预旋转刻字；make_die_instance() 统一装配网格+逐面刻字，
-                        dice_roll 演出与静态选骰共用同一套骰体与照明）
+                        dice_roll 演出与静态选骰共用同一套骰体与照明；d8 主色 #FDB26B，display_bounds() 供静态视图适配相机；
+                        _display_tilt_for() 按骰型选静姿倾角：d4 -28°、d6 -14°、d8 -8°、d12 -18°）
       die_view.gd       DieView：单个骰子的静态 3D 视图（上部无边框 Button 内嵌 SubViewportContainer + 小 SubViewport：
                        own_world_3d / transparent_bg / UPDATE_ONCE；下部效果提示 RichTextLabel；
                        只在骰面/选中/锁定变化时重渲染；选中金（壳层 1.10，略加粗）/命定粉（1.06）不透明反壳描边（CULL_FRONT，无 additive 发光），
-                       静态视图结果面正对镜头、绕屏幕水平轴 18° 上仰（d4/d8 三角面 28°，正交镜头 size 2.0，露出底面/侧面），悬停轻微放大；普通 cell 128×150、敌方 cell 96×132（与玩家同一姿态/镜头/灯光））
+                       静态视图结果面正对镜头、按骰型绕屏幕水平轴上仰（d4 -28°/d6 -14°/d8 -8°/d12 -18°，正交镜头基础 size 2.0，露出底面/侧面），
+                       按投影包围盒（含 1.10 选中壳）居中并按骰型自动放大 size（d8 约 2.5），悬停轻微放大；普通 cell 128×150、敌方 cell 96×132）
   tests/
     sim.gd             792 局 AI vs AI 回归监控模拟（12 角色有序两两 ×6 局，每角色 132 局；随机曜彩；
                        数值对齐官方版，仅监控不调参）
-    keywords.gd        关键词级断言测试：无 RNG 摆定骰面直接断言结算数值，36 组场景 1206 项断言；
-                       **改核心结算逻辑必跑**，期望 KEYWORDS pass=1206 fail=0
+    keywords.gd        关键词级断言测试：无 RNG 摆定骰面直接断言结算数值，36 组场景 1207 项断言；
+                       **改核心结算逻辑必跑**，期望 KEYWORDS pass=1207 fail=0
     ui_play.gd         无头假人全流程（含重投、曜彩使用路径），期望 UI PLAY DONE（约 1 分钟；超时退出码 1）
     ui_smoke.gd        场景实例化冒烟（30 帧）+ 效果显示/推荐曜彩/HP 条/窄窗弹窗/效果名中文映射/预期效果连击×N/命定锁定/
                        DiceRow 结构（点选切换/池化 id/逐骰提示精确性/敌方 96×132/敌方标题（含上回合）与总计/选骰提示/
                        确认按钮启用条件/状态栏独立行/战绩遮罩/布局 offset）/各骰型面数与刻字、BoxMesh/精确多面体网格、骰体与描边不透明、
-                       数字贴面/停姿/d4 刻字竖直/静态正视姿态（结果面朝镜头 + 18°/28° 上仰）/压暗 alpha 断言，期望 UI SMOKE OK
+                       数字贴面/停姿/d4 刻字竖直/静态正视姿态（结果面朝镜头 + 按骰型上仰 d4 -28°/d6 -14°/d8 -8°/d12 -18°）/
+                       中心选骰合计（数值/标题/显隐）/压暗 alpha 断言，期望 UI SMOKE OK
     soak.gd            无头浸泡：2000 局随机角色/曜彩 + AI/随机策略，检查 HP/winner/回合/骰数/sel/rerolls/stats/log 不变量；
                        区分击倒与 80 回合 HP 判定；期望 SOAK OK games=2000 fails=0（约 3-5s）
     fuzz_actions.gd    随机动作 fuzz：valid 模式按合法状态机推进（2 万步，期望 FUZZ OK）；invalid 模式专测越界/错阶段/对方骰/
@@ -191,7 +202,7 @@ server/                Ubuntu 玩家数据存储服务（2026-11-12 交付，202
 
 ## 提交前检查（代码提交用）
 
-- [ ] 无头链全绿：`keywords.gd`（`pass=1206 fail=0`）、`sim.gd`（12 行）、`ui_play.gd`（`DONE`）、`ui_smoke.gd`（`OK`）、`soak.gd`（`SOAK OK`）、`fuzz_actions.gd`（`FUZZ OK`）；开窗 `ui_stress.gd`（`UI STRESS OK`）；新增 `class_name` 先跑 `--import`。
+- [ ] 无头链全绿：`keywords.gd`（`pass=1207 fail=0`）、`sim.gd`（12 行）、`ui_play.gd`（`DONE`）、`ui_smoke.gd`（`OK`）、`soak.gd`（`SOAK OK`）、`fuzz_actions.gd`（`FUZZ OK`）；开窗 `ui_stress.gd`（`UI STRESS OK`）；新增 `class_name` 先跑 `--import`。
 - [ ] 改布局/字号/演出：跑 `shot.gd` 六图并 Read 核对；视觉最终由用户开窗确认。
 - [ ] 规则/时序改动：`DESIGN.md` §9/§10/§11 同步；数值改动已获用户批准，并同步 xlsx 与 `gamedata.gd`。
 - [ ] 文档计数同步：`CONTEXT.md` §7、`DESIGN.md` §11、`AGENTS.md`、本文件、`GODOT_GUIDE.md`。

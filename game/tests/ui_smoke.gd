@@ -108,6 +108,16 @@ func _init() -> void:
 		var disp: Basis = DieVisuals.display_rotation(spec.faces, 0, DieView.CAM_NORMAL)
 		var to_cam: Vector3 = (disp * (spec.faces[0].normal as Vector3)).normalized()
 		assert(to_cam.dot(DieView.CAM_NORMAL.normalized()) > 0.8)
+		# 倾角按骰型区分：d8 压到接近正视玩家，d6 略减，d4/d12 保持原样
+		var face_on: float = to_cam.dot(DieView.CAM_NORMAL.normalized())
+		if sides == 8:
+			assert(face_on > 0.985)
+		elif sides == 6:
+			assert(face_on > 0.96)
+		elif sides == 4:
+			assert(face_on < 0.90)
+		else:
+			assert(face_on > 0.94)
 	var yd := Die.new()
 	yd.yaocai = "网络渗透"
 	yd.face = 0
@@ -133,11 +143,15 @@ func _init() -> void:
 	s2._refresh_preview()
 	assert(s2.info_label.text.contains("连击"))
 	assert(s2.info_label.text.contains("×2"))
-	# 多来源连击计数必须按前缀累加：3 个来源 -> 连击×3（旧实现第 3 个会重复追加）
-	var combo_arr: Array = []
-	for i in range(3):
-		s2._push_preview_fx(combo_arr, {"op": "combo"})
-	assert(combo_arr == ["连击×3"])
+	# 多来源连击在 _active_fx 里按来源计数（3 个来源 -> 3），预览再格式化为「连击×N」
+	var combo_player := {"cfg": {"name": "t", "intro": "", "atk": 1, "def": 1, "hp": 1,
+		"passives": [
+			{"t": "attack", "c": {"t": "always"}, "fx": [{"op": "combo"}]},
+			{"t": "attack", "c": {"t": "always"}, "fx": [{"op": "combo"}]},
+			{"t": "attack", "c": {"t": "always"}, "fx": [{"op": "combo"}]},
+		]}, "dice": [], "strength": []}
+	var combo_counts: Dictionary = s2._active_fx(combo_player, [])
+	assert(int(combo_counts.get("连击", 0)) == 3)
 	# 结算横幅注记：结算中（荆棘/中毒等）分出胜负不能误标「力场挡下」；多段连击显示段数
 	var no_hit := {"dmg": 0, "dmg2": 0, "counter": 0, "combo_n": 0, "pierce": false}
 	assert(s2._settle_notes(false, false, true, no_hit, 5)[0].contains("主伤害未造成"))
@@ -194,7 +208,8 @@ func _init() -> void:
 	first_view.set_dimmed(false)
 	s2.refresh()
 	assert(s2.dice_row.get_child(0).get_instance_id() == first_id)
-	# 逐骰提示：物理学院 2 组对子，提示行含「连击」与骰型文字
+	# 逐骰提示：物理学院 2 组对子，普通骰只列「可能出现的效果」（不再标面数），
+	# 未选中为浅色（不含金色）；选满触发后同一提示加深为金色
 	var sides_txt := GameData.SIDES_TEXT
 	for i in range(4):
 		my_dice[i].value = 2 if i < 2 else 3
@@ -202,35 +217,113 @@ func _init() -> void:
 	s2._sel.clear()
 	s2.refresh()
 	var hint_ok := false
+	var lit_hex: String = s2.HINT_FX_LIT.to_html(false)
 	for c in s2.dice_row.get_children():
 		var dv: DieView = c
 		var txt: String = dv.get_hint_label().text
-		if txt.contains("连击") and txt.contains(sides_txt.get(dv.get_die().sides, "")):
+		assert(not txt.contains(sides_txt.get(dv.get_die().sides, "面")))
+		if txt.contains("连击"):
 			hint_ok = true
+			assert(not txt.contains(lit_hex))
 	assert(hint_ok)
-	# 选够后确认按钮启用，提示行同步显示需选数量
+	# 选够后确认按钮启用，提示行同步显示需选数量；2 组对子生效，已选骰提示加深
 	s2._sel.clear()
 	for i in range(mini(s2._need, my_dice.size())):
 		s2._sel.append(my_dice[i])
 	s2.refresh()
 	assert(s2._sel.size() == s2._need and not s2.btn_confirm.disabled)
 	assert(s2.dice_tip.text.contains("需选 %d 颗" % s2._need))
-	# 逐骰提示与结算同口径：命定曜彩骰强制入选后，网安 sum_ge 差一颗高骰就应无提示
+	for c in s2.dice_row.get_children():
+		var dv2: DieView = c
+		if s2._sel.has(dv2.get_die()):
+			assert(dv2.get_hint_label().text.contains(lit_hex))
+	# 骰下提示按用户 2026-11-27 逐角色验收：
+	# 1) 网安 sum_ge、工程 round_end 不逐骰标注
+	s2._phase = "attack"
 	var cp := {"cfg": GameData.CHARACTERS["cyber"], "dice": [], "strength": [], "hp": 25, "hp_max": 25}
 	for v in [1, 1, 10, 10, 10]:
 		var cd := Die.new()
 		cd.sides = 6
 		cd.value = v
 		cp.dice.append(cd)
-	var myd := Die.new()
-	myd.yaocai = "命运签约"
-	myd.face = 0
-	myd.value = 1
-	cp.dice.append(myd)
+	assert(s2._die_fx_hints(cp, 3).is_empty())
+	var eng_p := {"cfg": GameData.CHARACTERS["engineering"], "dice": [], "strength": [], "hp": 30, "hp_max": 30}
+	for v in [3, 3, 5, 6, 4]:
+		var ed := Die.new()
+		ed.sides = 6
+		ed.value = v
+		eng_p.dice.append(ed)
+	assert(s2._die_fx_hints(eng_p, 3).is_empty())
+	# 2) 化学：全偶数须选满 4 颗才加深，选两颗偶数不提前变金
+	var chem_p := {"cfg": GameData.CHARACTERS["chem"], "dice": [], "strength": [], "hp": 30, "hp_max": 30}
+	for v in [2, 4, 6, 4, 8]:
+		var chd := Die.new()
+		chd.sides = 6
+		chd.value = v
+		chem_p.dice.append(chd)
+	s2._need = 4
+	s2._sel = [chem_p.dice[0], chem_p.dice[1]]
+	assert(s2._die_lit_fx(chem_p, chem_p.dice[0], s2._sel).is_empty())
+	s2._sel = [chem_p.dice[0], chem_p.dice[1], chem_p.dice[2], chem_p.dice[3]]
+	assert(s2._die_lit_fx(chem_p, chem_p.dice[0], s2._sel).has("升级所选骰"))
+	# 3) 信息：只在有同点数的骰下标注；选中对子即加深，非对子骰不变金
+	var info_p := {"cfg": GameData.CHARACTERS["info"], "dice": [], "strength": [], "hp": 22, "hp_max": 22}
+	for v in [3, 3, 5, 6, 4]:
+		var id := Die.new()
+		id.sides = 6
+		id.value = v
+		info_p.dice.append(id)
+	s2._need = 4
+	var info_hints: Dictionary = s2._die_fx_hints(info_p, 4)
+	assert(info_hints.has(info_p.dice[0]) and info_hints.has(info_p.dice[1]))
+	assert(not info_hints.has(info_p.dice[2]))   # 5 没有同点数伙伴，不标注
+	s2._sel = [info_p.dice[0], info_p.dice[1]]
+	assert(s2._die_lit_fx(info_p, info_p.dice[0], s2._sel).has("骇入"))
+	s2._sel = [info_p.dice[0], info_p.dice[1], info_p.dice[2], info_p.dice[3]]
+	assert(s2._die_lit_fx(info_p, info_p.dice[2], s2._sel).is_empty())
+	# 4) 核科学：只在能凑对的骰下标注；选中对子即金，且非对子骰不变金
+	var nuc_p := {"cfg": GameData.CHARACTERS["nuclear"], "dice": [], "strength": [], "hp": 25, "hp_max": 25}
+	for v in [3, 3, 5, 6, 4]:
+		var nd := Die.new()
+		nd.sides = 6
+		nd.value = v
+		nuc_p.dice.append(nd)
+	s2._need = 4
+	var nuc_hints: Dictionary = s2._die_fx_hints(nuc_p, 4)
+	assert(nuc_hints.has(nuc_p.dice[0]) and not nuc_hints.has(nuc_p.dice[2]))
+	s2._sel = [nuc_p.dice[0], nuc_p.dice[1]]
+	assert(s2._die_lit_fx(nuc_p, nuc_p.dice[0], s2._sel).has("每对瞬伤3"))
+	s2._sel = [nuc_p.dice[0], nuc_p.dice[1], nuc_p.dice[2], nuc_p.dice[3]]
+	assert(s2._die_lit_fx(nuc_p, nuc_p.dice[0], s2._sel).has("每对瞬伤3"))
+	assert(s2._die_lit_fx(nuc_p, nuc_p.dice[2], s2._sel).is_empty())
+	# 5) 生命：不屈触发过一次后不再显示提示
+	var life_p := {"cfg": GameData.CHARACTERS["life"], "dice": [], "strength": [], "hp": 20, "hp_max": 20, "unyielding_used": false}
+	for v in [6, 6, 8, 6, 6]:
+		var ld := Die.new()
+		ld.sides = 6
+		ld.value = v
+		life_p.dice.append(ld)
+	s2._phase = "defense"
+	s2._need = 2
+	assert(not s2._die_fx_hints(life_p, 2).is_empty())
+	life_p.unyielding_used = true
+	assert(s2._die_fx_hints(life_p, 2).is_empty())
+	# 6) 地球：只标注「全为6 → 力量×100% + 治愈」，不标注 50% 力量
 	s2._phase = "attack"
-	var cyber_hints: Dictionary = s2._die_fx_hints(cp, 3)
-	assert(cyber_hints.has(cp.dice[2]))       # 10 + 命定1 + 10 = 21 ≥ 19
-	assert(not cyber_hints.has(cp.dice[0]))   # 1 + 命定1 + 10 = 12 < 19（旧近似会误报）
+	var earth_p := {"cfg": GameData.CHARACTERS["earth"], "dice": [], "strength": [], "hp": 28, "hp_max": 28}
+	for v in [6, 6, 8, 6, 6]:
+		var ead := Die.new()
+		ead.sides = 6
+		ead.value = v
+		earth_p.dice.append(ead)
+	var earth_hints: Dictionary = s2._die_fx_hints(earth_p, 2)
+	assert(earth_hints.has(earth_p.dice[0]))
+	assert(not earth_hints.has(earth_p.dice[2]))   # 8 不参与「全为6」
+	var earth_txt: String = "、".join(earth_hints[earth_p.dice[0]])
+	assert(earth_txt.contains("治愈") and not earth_txt.contains("50%"))
+	# 释放假玩家占位，恢复真实选骰状态
+	s2._need = 4
+	s2._sel = []
 	# 命定骰的 DieView 必须锁定，点击不能取消
 	var md2 := Die.new()
 	md2.yaocai = "命运签约"
@@ -266,6 +359,26 @@ func _init() -> void:
 	assert(enemy_views == en.dice.size())
 	s2._en_committed = true
 	en.sel = [en.dice[0], en.dice[1]]
+	s2.refresh()
+	# 页面中心选骰合计：玩家阶段按 _sel 实时求和；敌方提交后显示其选骰合计
+	assert(s2.sel_sum.visible)
+	assert(s2.sel_sum_value.text == str(Battle.dice_sum(s2._sel)))
+	assert(s2.sel_sum_title.text == "我方选骰合计")
+	s2._enemy_sum_shown = true
+	s2._human_active = false
+	s2.refresh()
+	assert(s2.sel_sum.visible)
+	assert(s2.sel_sum_value.text == str(Battle.dice_sum(en.sel)))
+	assert(s2.sel_sum_title.text == "敌方选骰合计")
+	# 中心圆环位于页面中心附近、在骰行提示之上，不压候选骰区
+	# （按 1080 设计高度校验：纵向锚点 0.5 + offset 90 = 630 < DiceTip 664）
+	assert(absf((s2.sel_sum.offset_top + s2.sel_sum.offset_bottom) * 0.5) <= 120.0)
+	assert(540.0 + s2.sel_sum.offset_bottom <= s2.dice_tip.offset_top)
+	# 非选骰阶段隐藏
+	s2._enemy_sum_shown = false
+	s2.refresh()
+	assert(not s2.sel_sum.visible)
+	s2._human_active = true
 	s2.refresh()
 	var visible_views := 0
 	for c in s2.enemy_dice.get_children():

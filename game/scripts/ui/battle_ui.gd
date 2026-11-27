@@ -15,6 +15,7 @@ var _phase_done: bool = false   # 人类阶段是否已成功确认（_on_confir
 var _roll_done: bool = false    # 当前投骰演出是否已收到 finished（看门狗用）
 var _roll_cb: Callable         # 当前投骰的 finished 回调（超时/重入时断开，防串台）
 var _leaving: bool = false      # 防止总结页重复切场景
+var _enemy_sum_shown: bool = false   # 敌方提交选骰后短暂展示其点数合计（页面中心）
 
 @onready var enemy_name: Label = %EnemyName
 @onready var enemy_hp: Label = %EnemyHp
@@ -31,6 +32,9 @@ var _leaving: bool = false      # 防止总结页重复切场景
 @onready var player_bar: PanelContainer = $PlayerBar
 @onready var banner: Label = %Banner
 @onready var big: Label = %Big
+@onready var sel_sum: Control = %SelSum
+@onready var sel_sum_value: Label = %SelSumValue
+@onready var sel_sum_title: Label = %SelSumTitle
 @onready var info_label: RichTextLabel = %InfoLabel
 @onready var player_passive: RichTextLabel = %PlayerPassive
 @onready var player_name: Label = %PlayerName
@@ -177,6 +181,18 @@ func _fx_list_text(fx_arr: Array) -> String:
 		parts.append(_fx_text(fx))
 	return "、".join(parts)
 
+# 效果名唯一映射：预期效果/骰下提示与战绩统计共用，避免 _fx_text / _fx_name 两份文案漂移
+const FX_NAMES := {
+	"combo": "连击", "pierce": "洞穿", "counter": "反击", "hack": "骇入",
+	"instant": "瞬伤", "instant_per_pair": "瞬伤", "thorns": "荆棘", "field": "力场",
+	"unyielding": "不屈", "unyielding_once": "不屈", "leech": "虹吸",
+	"heal": "治愈", "heal_same": "治愈", "upgrade_sel": "升级",
+	"strength": "力量", "strength_set": "力量", "leap_perm": "跃升",
+	"atk_add": "攻击值加成", "mingding": "命定", "yaocai_use_add": "曜彩次数增加",
+	"yaocai": "曜彩投掷", "reroll": "重投",
+	"atk_level_add": "攻击等级变化", "atk_level_set": "攻击等级变化", "def_level_add": "防御等级变化",
+}
+
 func _fx_text(fx: Dictionary) -> String:
 	match fx.op:
 		# 无参数效果与战绩统计共用同一套中文名，避免两份文案漂移
@@ -221,6 +237,12 @@ const ENEMY_BAR_FIT_PAD := 4.0
 const ENEMY_DICE_GAP := 4.0
 # 骰块每行最多 5 颗：5 颗仍不越过居中横幅文字，第 6 颗（曜彩骰）自动换第二行
 const ENEMY_DICE_COLS := 5
+# 选骰提示颜色：选够=金色，未选够=灰蓝
+const DICE_TIP_READY := Color(1.0, 0.85, 0.3)
+const DICE_TIP_IDLE := Color(0.72, 0.74, 0.80)
+# 骰下效果提示：未选中呈浅色（只是「可能出现」），选中且当前选骰已触发时加深为金色
+const HINT_FX_DIM := Color(0.62, 0.66, 0.74)
+const HINT_FX_LIT := Color(1.0, 0.84, 0.42)
 
 func _make_badge(txt: String, bg: Color, tip: String) -> PanelContainer:
 	var panel := PanelContainer.new()
@@ -311,9 +333,7 @@ func refresh() -> void:
 	if _en_committed:
 		# 回合收尾会移除曜彩骰，但 en.sel 要到下回合 round_open 才清空；
 		# 只展示仍在骰池里的实体，避免「总计」把已消失的骰子算进去
-		for d in en.sel:
-			if en.dice.has(d):
-				en_dice.append(d)
+		en_dice = _enemy_selected(en)
 		en_dice.sort_custom(_die_less)
 	elif _en_rolled or battle.round > 1:
 		# 守方本回合尚未重投时，显示其上回合投出的骰子（同原作；第 1 回合无历史）
@@ -324,18 +344,18 @@ func refresh() -> void:
 	my_dice.sort_custom(_die_less)
 	var fx_hints: Dictionary = _die_fx_hints(me, _need) if _human_active else {}
 	_sync_dice_row(my_dice, fx_hints)
-	var has_yc: bool = battle.players[0].yc_name != ""
+	var has_yc: bool = me.yc_name != ""
 	btn_yc.disabled = not _human_active or not has_yc
 	if not has_yc:
 		btn_yc.text = "无曜彩骰"
 	elif not _human_active:
-		btn_yc.text = "曜彩 %s\n剩%d次" % [battle.players[0].yc_name, battle.players[0].yc_uses]
+		btn_yc.text = "曜彩 %s\n剩%d次" % [me.yc_name, me.yc_uses]
 	else:
 		var reason: String = battle.yaocai_reason(0, _phase)
 		if reason == "":
-			btn_yc.text = "曜彩 %s\n剩%d次·可用" % [battle.players[0].yc_name, battle.players[0].yc_uses]
+			btn_yc.text = "曜彩 %s\n剩%d次·可用" % [me.yc_name, me.yc_uses]
 		else:
-			btn_yc.text = "曜彩 %s\n%s" % [battle.players[0].yc_name, reason]
+			btn_yc.text = "曜彩 %s\n%s" % [me.yc_name, reason]
 	if not _human_active or not has_yc:
 		_hide_yc_popup()
 	if not _human_active:
@@ -354,7 +374,7 @@ func refresh() -> void:
 	else:
 		btn_confirm.text = "确认选骰 %d/任意" % _sel.size()
 	# 选够才能确认：按钮直接置灰，比点了以后再报错更直观
-	var sel_ok: bool = (_sel.size() == _need) if _need > 0 else (_sel.size() >= 1)
+	var sel_ok: bool = _selection_ready()
 	btn_confirm.disabled = not _human_active or not sel_ok
 	_primary.apply_primary(btn_confirm, not btn_confirm.disabled)
 	if _human_active and not sel_ok:
@@ -362,22 +382,57 @@ func refresh() -> void:
 	else:
 		btn_confirm.tooltip_text = ""
 	_update_dice_tip()
+	_update_sel_sum()
 	if battle.log.size() > 0:
 		log_line.text = _log_text(battle.log[battle.log.size() - 1])
 	_flush_hits()
+
+# 选骰是否满足确认条件（需选恰好 N 颗；自由选骰至少 1 颗）：按钮/提示/确认/骰下金色共用
+func _selection_ready() -> bool:
+	return _sel_ready(_sel, _need)
+
+# 就绪判断的唯一实现：传入任意选骰集合，避免 _die_lit_fx 之类按骰判定的函数隐式读取 _sel
+func _sel_ready(sel: Array, need: int) -> bool:
+	return (sel.size() == need) if need > 0 else (sel.size() >= 1)
 
 # 候选骰上方的操作提示：明确「3D 骰可直接点」，并实时显示已选/需选数量
 func _update_dice_tip() -> void:
 	if not _human_active:
 		dice_tip.text = ""
-		dice_tip.add_theme_color_override("font_color", Color(0.72, 0.74, 0.80))
+		dice_tip.add_theme_color_override("font_color", DICE_TIP_IDLE)
 		return
 	var need_txt: String = ("需选 %d 颗" % _need) if _need > 0 else "任意数量，至少 1 颗"
-	var sel_ok: bool = (_sel.size() == _need) if _need > 0 else (_sel.size() >= 1)
+	var sel_ok: bool = _selection_ready()
 	dice_tip.text = "点击骰子选择/取消 · 已选 %d 颗（%s）%s" % [
 		_sel.size(), need_txt, "· 可以确认" if sel_ok else ""]
-	dice_tip.add_theme_color_override("font_color",
-		Color(1.0, 0.85, 0.3) if sel_ok else Color(0.72, 0.74, 0.80))
+	dice_tip.add_theme_color_override("font_color", DICE_TIP_READY if sel_ok else DICE_TIP_IDLE)
+
+# 敌方已提交的选择里仍在骰池中的骰子（round_close 后 sel 可能含已移除的曜彩骰）；
+# 敌方骰块展示与中心合计共用同一过滤，避免「总计」与中心数字口径不一。
+func _enemy_selected(en: Dictionary) -> Array:
+	var out: Array = []
+	for d in en.sel:
+		if en.dice.has(d):
+			out.append(d)
+	return out
+
+# 页面中心选骰合计（参考原作蓝色圆环）：玩家选骰时随点选实时更新；
+# 敌方提交选骰后短暂显示其合计，让「对手选了多少点」一眼可读。
+# 求和统一走 Battle.dice_sum，与攻击值预览/结算/敌方骰块「总计」同一口径。
+func _update_sel_sum() -> void:
+	var show: bool = _human_active or _enemy_sum_shown
+	sel_sum.visible = show
+	if not show:
+		return
+	var total := 0
+	if _human_active:
+		total = Battle.dice_sum(_sel)
+		sel_sum_title.text = "我方选骰合计"
+	else:
+		var en: Dictionary = battle.players[1]
+		total = Battle.dice_sum(_enemy_selected(en))
+		sel_sum_title.text = "敌方选骰合计"
+	sel_sum_value.text = str(total)
 
 # 按 Die 对象池化 DieView：玩家候选行与敌方行共用创建/复用逻辑，避免两处各写一份
 func _obtain_view(cache: Dictionary, parent: Node, d: Die, enemy: bool) -> DieView:
@@ -408,6 +463,7 @@ func _prune_views(cache: Dictionary, parent: Node, live: Dictionary) -> void:
 # 不重建 SubViewport（每次点选都重建 World3D 会掉帧并闪烁）
 func _sync_dice_row(my_dice: Array, fx_hints: Dictionary) -> void:
 	var live := {}
+	var me: Dictionary = battle.players[0]
 	for i in range(my_dice.size()):
 		var d: Die = my_dice[i]
 		live[d] = true
@@ -417,7 +473,8 @@ func _sync_dice_row(my_dice: Array, fx_hints: Dictionary) -> void:
 		v.set_selected(_sel.has(d))
 		v.set_interactive(_human_active and not locked)
 		v.set_dimmed(not _human_active)
-		v.set_hint(_dice_hint_bbcode(d, fx_hints))
+		var lit: Dictionary = _die_hint_lit(me, d, _sel) if _human_active else {}
+		v.set_hint(_dice_hint_bbcode(d, fx_hints, lit))
 		v.set_tooltip(_die_text(d))
 		dice_row.move_child(v, i)
 	_prune_views(_die_views, dice_row, live)
@@ -428,6 +485,8 @@ func _sync_enemy_row(en: Dictionary, shown: Array) -> void:
 	var shown_set := {}
 	for d in shown:
 		shown_set[d] = true
+	# 敌方普通骰不显示被动提示；已提交的曜彩骰面效果与玩家选中态一样加深，
+	# 展示上回合骰子（未提交）时保持浅色
 	var live := {}
 	var all_dice: Array = en.dice
 	for d in all_dice:
@@ -437,7 +496,8 @@ func _sync_enemy_row(en: Dictionary, shown: Array) -> void:
 		v.set_dimmed(false)
 		v.set_selected(false)
 		v.set_locked(false)
-		v.set_hint(_dice_hint_bbcode(d, {}))
+		var lit: Dictionary = _die_hint_lit(en, d, shown) if _en_committed and d.is_yaocai() else {}
+		v.set_hint(_dice_hint_bbcode(d, {}, lit))
 		v.set_tooltip(_die_text(d))
 	_prune_views(_enemy_views, enemy_dice, live)
 	var pos := 0
@@ -493,20 +553,30 @@ func _sync_enemy_row(en: Dictionary, shown: Array) -> void:
 		enemy_dice_block.offset_top = bar_bottom + ENEMY_DICE_GAP
 		enemy_dice_block.offset_bottom = enemy_dice_block.offset_top + block_h
 
-# 骰子下方提示：类型/曜彩名用灰紫小字，效果词沿用效果显示的金色可点击链接
-func _dice_hint_bbcode(d: Die, fx_hints: Dictionary) -> String:
+# 骰子下方提示：普通骰取消面数标注，只列「参与某个刚好 need 颗的选择即可触发」的效果词；
+# 未选中呈浅色（只是可能），选中且确定会生效时加深为金色（lit 由 _die_hint_lit 逐骰给出）。
+# 曜彩骰保留骰名与当前面效果，面效果随其入选才加深。
+func _dice_hint_bbcode(d: Die, fx_hints: Dictionary, lit: Dictionary) -> String:
 	if d.is_yaocai():
-		var faces: Array = GameData.YAOCAI[d.yaocai].faces
-		var fi: int = clampi(d.face, 0, faces.size() - 1)
-		var fx_arr: Array = faces[fi].fx
+		var fx_arr: Array = _yaocai_face_fx(d)
 		var head := "[color=#cabaff]%s[/color]" % d.yaocai
 		if fx_arr.is_empty():
-			return "%s · [color=#aab0c0]无效果[/color]" % head
-		return "%s · %s" % [head, GlossaryPanel.kw_bbcode(_fx_list_text(fx_arr))]
-	var head := "[color=#b6bccb]%s[/color]" % _die_head(d)
-	if fx_hints.has(d) and not (fx_hints[d] as Array).is_empty():
-		return "%s · %s" % [head, GlossaryPanel.kw_bbcode("、".join(fx_hints[d]))]
-	return head
+			return "%s · [color=#7f8696]无效果[/color]" % head
+		var yc_parts: Array = []
+		for fx in fx_arr:
+			yc_parts.append(_fx_hint_item(_fx_text(fx), lit))
+		return "%s · %s" % [head, "、".join(yc_parts)]
+	if not fx_hints.has(d) or (fx_hints[d] as Array).is_empty():
+		return ""
+	var parts: Array = []
+	for t in fx_hints[d]:
+		parts.append(_fx_hint_item(str(t), lit))
+	return "、".join(parts)
+
+# 单个效果提示词：整段同色并保留关键词点击解释；lit 含该词（确定会生效）时金色加深
+func _fx_hint_item(t: String, lit: Dictionary) -> String:
+	var col: Color = HINT_FX_LIT if lit.has(t) else HINT_FX_DIM
+	return "[color=#%s]%s[/color]" % [col.to_html(false), GlossaryPanel.kw_bbcode(t, col)]
 
 # 演出期间锁骰：不改 _sel，只禁用点击并把骰子调暗（不重建视图）
 func _set_dice_input(on: bool) -> void:
@@ -556,49 +626,101 @@ func _phase_passives(p: Dictionary) -> Array:
 			out.append(pas)
 	return out
 
+# 选骰条件求值的统一上下文：预期效果按实际攻击值判定（含已有力量层数；
+# 网安「攻击值≥19」等条件在选骰时就要看准）
+func _fx_ctx(p: Dictionary, sel: Array) -> Dictionary:
+	return {"flags": {}, "sel": sel, "values": [], "atk_value": Battle.dice_sum(sel) + battle.strength_total(p), "bonus": 0, "face_points": 0}
+
+# 当前选骰会触发的效果（中文名 → 来源次数），与结算同口径复用 Battle.eval_cond；
+# 预期效果行使用（骰下提示的加深另由 _die_lit_fx 按骰归属判定）
+func _active_fx(p: Dictionary, sel: Array) -> Dictionary:
+	var out := {}
+	var ctx: Dictionary = _fx_ctx(p, sel)
+	for pas in _phase_passives(p):
+		if Battle.eval_cond(pas.c, p, sel, ctx):
+			for fx in pas.fx:
+				if not _fx_hint_ok(p, fx):
+					continue
+				var t: String = _fx_text(fx)
+				out[t] = int(out.get(t, 0)) + 1
+	for d in sel:
+		if d.is_yaocai():
+			for fx in _yaocai_face_fx(d):
+				var t: String = _fx_text(fx)
+				out[t] = int(out.get(t, 0)) + 1
+	return out
+
 # 选骰效果预览：已选组合触发的效果（金色，InfoLabel 汇总行）
 func _refresh_preview() -> void:
-	var p: Dictionary = battle.players[0]
+	var counts: Dictionary = _active_fx(battle.players[0], _sel)
 	var triggered: Array = []
-	# 预期效果按实际攻击值判定（含已有力量层数；网安「攻击值≥19」等条件在选骰时就要看准）
-	var ctx := {"flags": {}, "sel": _sel, "values": [], "atk_value": Battle.dice_sum(_sel) + battle.strength_total(p), "bonus": 0, "face_points": 0}
-	for pas in _phase_passives(p):
-		if Battle.eval_cond(pas.c, p, _sel, ctx):
-			for fx in pas.fx:
-				_push_preview_fx(triggered, fx)
-	for d in _sel:
-		if d.is_yaocai():
-			for fx in GameData.YAOCAI[d.yaocai].faces[d.face].fx:
-				_push_preview_fx(triggered, fx)
+	# 连击可多来源叠加显示「连击×N」；其余效果同名去重（字典键天然去重）
+	for t in counts:
+		var n: int = counts[t]
+		triggered.append("连击×%d" % n if t == "连击" and n > 1 else t)
 	if triggered.size() > 0:
 		info_label.text = "[center]%s[/center]" % GlossaryPanel.kw_bbcode("预期效果：%s" % "、".join(triggered))
-		info_label.add_theme_color_override("default_color", Color(1.0, 0.84, 0.42))
+		info_label.add_theme_color_override("default_color", HINT_FX_LIT)
 	else:
 		info_label.text = "[center]预期效果：无[/center]"
-		info_label.add_theme_color_override("default_color", Color(0.62, 0.66, 0.72))
-
-# 预期效果入列：连击可多来源叠加，显示为「连击×N」；其余效果仍去重
-func _push_preview_fx(arr: Array, fx: Dictionary) -> void:
-	var t: String = _fx_text(fx)
-	if fx.op == "combo":
-		# 必须按前缀找已有的「连击/连击×N」；旧实现直接 find("连击")，到第 3 个来源
-		# 就找不到「连击×2」而重复追加一条「连击」
-		for i in range(arr.size()):
-			var s: String = arr[i]
-			if s.begins_with("连击"):
-				var n: int = 1 if s == "连击" else int(s.substr(3))
-				arr[i] = "连击×%d" % (n + 1)
-				return
-		arr.append("连击")
-		return
-	if not arr.has(t):
-		arr.append(t)
+		info_label.add_theme_color_override("default_color", HINT_FX_DIM)
 
 # 逐骰效果提示（参照原作：骰子点数下方标注可能出现的效果）
 # 只标注「该骰参与某个刚好 need 颗的选择即可触发」的骰值相关被动；条件判定直接复用
 # Battle.eval_cond，避免与结算逻辑出现两套口径。命定骰必须入选，作为固定成员参与穷举。
-# 计数类（少年班连击/洞穿）与满血/always 等与骰值无关的条件不标注，避免每颗骰都挂提示。
-const HINT_COND_TYPES := ["has_pair", "pairs_ge", "all_eq_value", "not_all_eq_value", "all_even", "all_same", "sum_ge"]
+# 计数类（少年班连击/洞穿）与满血/always 等与骰值无关的条件不标注；
+# 按用户 2026-11-27 验收：网安 sum_ge、地球「力量=攻击值×50%」、工程 round_end 不逐骰标注。
+# 对子类只在「该骰能在触发组合里凑成对子」时标注（信息/核科学：只在相同点数的骰下显示）。
+const HINT_COND_TYPES := ["has_pair", "pairs_ge", "all_eq_value", "all_even", "all_same"]
+# 对子类条件：加骰不会破坏对子，选中对子即可确定会生效；其余条件必须选满才确定
+const HINT_PAIR_CONDS := ["has_pair", "pairs_ge"]
+
+# 骰下提示可用的效果：不屈只能触发 1 次，已用过就不再提示（假玩家字典缺字段也安全）
+func _fx_hint_ok(p: Dictionary, fx: Dictionary) -> bool:
+	return fx.op != "unyielding_once" or not bool(p.get("unyielding_used", false))
+
+# 曜彩骰当前面的效果表（越界面号按第 1 面处理，避免越界）
+func _yaocai_face_fx(d: Die) -> Array:
+	var faces: Array = GameData.YAOCAI[d.yaocai].faces
+	return faces[clampi(d.face, 0, faces.size() - 1)].fx
+
+# 某被动可用于骰下提示的效果词（同名去重；不屈已触发过则跳过）
+func _hint_fx_texts(p: Dictionary, pas: Dictionary) -> Array:
+	var out: Array = []
+	for fx in pas.fx:
+		if not _fx_hint_ok(p, fx):
+			continue
+		var t: String = _fx_text(fx)
+		if not out.has(t):
+			out.append(t)
+	return out
+
+# 参与骰下提示的被动：阶段被动 → 骰值条件白名单 → 有效果词，三重过滤只此一处；
+# 浅色提示（_die_fx_hints）与金色加深（_die_lit_fx）共用，避免两套口径漂移
+func _hint_passives(p: Dictionary) -> Array:
+	var out: Array = []
+	for pas in _phase_passives(p):
+		if not HINT_COND_TYPES.has(pas.c.t):
+			continue
+		var texts: Array = _hint_fx_texts(p, pas)
+		if texts.is_empty():
+			continue
+		out.append({"pas": pas, "texts": texts, "pair": HINT_PAIR_CONDS.has(pas.c.t)})
+	return out
+
+# 选中集合里是否有与 d 同点数的另一颗骰（对子类提示只挂在能凑对的骰下）
+func _has_value_twin(d: Die, sel: Array) -> bool:
+	var n := 0
+	for x in sel:
+		if x.value == d.value:
+			n += 1
+	return n >= 2
+
+func _value_counts(sel: Array) -> Dictionary:
+	var out := {}
+	for d in sel:
+		out[d.value] = int(out.get(d.value, 0)) + 1
+	return out
 
 func _die_fx_hints(p: Dictionary, need: int) -> Dictionary:
 	var result := {}
@@ -611,6 +733,10 @@ func _die_fx_hints(p: Dictionary, need: int) -> Dictionary:
 	if mandatory.size() > need:
 		return result
 	var strength: int = battle.strength_total(p)
+	var hint_pas: Array = _hint_passives(p)
+	if hint_pas.is_empty():
+		return result
+	var ctx := {"atk_value": 0}
 	for d in p.dice:
 		if d.is_yaocai():
 			continue
@@ -629,25 +755,59 @@ func _die_fx_hints(p: Dictionary, need: int) -> Dictionary:
 			continue
 		var combos: Array = AIController.combinations(rest, slots)
 		var texts: Array = []
-		for pas in _phase_passives(p):
-			if not HINT_COND_TYPES.has(pas.c.t):
-				continue
+		for hp in hint_pas:
+			var pas: Dictionary = hp.pas
 			var hit := false
 			for extra in combos:
 				var sel: Array = fixed.duplicate()
 				sel.append_array(extra)
-				if Battle.eval_cond(pas.c, p, sel, {"atk_value": Battle.dice_sum(sel) + strength}):
-					hit = true
-					break
+				ctx["atk_value"] = Battle.dice_sum(sel) + strength
+				if not Battle.eval_cond(pas.c, p, sel, ctx):
+					continue
+				if hp.pair and not _has_value_twin(d, sel):
+					continue
+				hit = true
+				break
 			if not hit:
 				continue
-			for fx in pas.fx:
-				var t: String = _fx_text(fx)
+			for t in hp.texts:
 				if not texts.has(t):
 					texts.append(t)
 		if not texts.is_empty():
 			result[d] = texts
 	return result
+
+# 骰下提示是否加深（金色）：该骰已入选、条件在当前选骰成立、且该骰确实是触发者。
+# 对子类选中对子即可加深（加骰不会破坏）；全偶数/全相同/全为某值须选满才确定，
+# 避免化学「全偶数」选到两颗偶数就提前变金（用户 2026-11-27 验收口径）。
+func _die_lit_fx(p: Dictionary, d: Die, sel: Array) -> Dictionary:
+	var out := {}
+	if d.is_yaocai() or not sel.has(d):
+		return out
+	var ready: bool = _sel_ready(sel, _need)
+	var counts: Dictionary = _value_counts(sel)
+	var ctx: Dictionary = _fx_ctx(p, sel)
+	for hp in _hint_passives(p):
+		if not hp.pair and not ready:
+			continue
+		if hp.pair and int(counts.get(d.value, 0)) < 2:
+			continue
+		if not Battle.eval_cond(hp.pas.c, p, sel, ctx):
+			continue
+		for t in hp.texts:
+			out[t] = true
+	return out
+
+# 单颗骰的提示加深集合：曜彩骰入选后其面效果即生效；普通骰走被动条件判定
+func _die_hint_lit(p: Dictionary, d: Die, sel: Array) -> Dictionary:
+	var out := {}
+	if d.is_yaocai():
+		if not sel.has(d):
+			return out
+		for fx in _yaocai_face_fx(d):
+			out[_fx_text(fx)] = true
+		return out
+	return _die_lit_fx(p, d, sel)
 
 func _die_head(d: Die) -> String:
 	return d.yaocai if d.is_yaocai() else GameData.SIDES_TEXT.get(d.sides, "%d面" % d.sides)
@@ -712,6 +872,7 @@ func _round_ui() -> void:
 	_sel.clear()   # 上回合的高亮不带到新回合（human_phase 开始时会再清一次）
 	_en_rolled = false
 	_en_committed = false
+	_enemy_sum_shown = false   # 中心合计只在敌方本回合提交后短暂显示
 	refresh()
 	var order := [[battle.attacker, "attack"], [1 - battle.attacker, "defense"]]
 	var def_skipped := false
@@ -809,11 +970,13 @@ func _animate_roll(dice: Array, idx: int, quick: bool = false) -> bool:
 	var elapsed := 0.0
 	while not _roll_done and elapsed < 8.0:
 		if not is_inside_tree():
-			if roller.finished.is_connected(_roll_cb):
+			if is_instance_valid(roller) and roller.finished.is_connected(_roll_cb):
 				roller.finished.disconnect(_roll_cb)
 			return false
 		await get_tree().process_frame
 		elapsed += get_process_delta_time()
+	if not is_inside_tree():
+		return false
 	if roller.finished.is_connected(_roll_cb):
 		roller.finished.disconnect(_roll_cb)
 	if not _roll_done:
@@ -864,9 +1027,14 @@ func _ai_phase(idx: int, phase: String) -> void:
 		if not battle.commit_selection(idx, phase, []):
 			push_error("battle_ui: AI 空选兜底仍被拒绝（idx=%d phase=%s）" % [idx, phase])
 	_en_committed = true
+	# AI 是一次性提交选骰：提交后在中场短暂展示其选骰合计，再进入结算
+	_enemy_sum_shown = true
 	refresh()
-	if not await _wait(0.5):
+	if not await _wait(0.9):
+		_enemy_sum_shown = false
 		return
+	_enemy_sum_shown = false
+	refresh()
 
 func _human_phase(phase: String) -> void:
 	_phase = phase
@@ -935,28 +1103,7 @@ func _summary_text() -> String:
 	return "\n".join(lines)
 
 func _fx_name(op: String) -> String:
-	match op:
-		"combo": return "连击"
-		"pierce": return "洞穿"
-		"counter": return "反击"
-		"hack": return "骇入"
-		"instant", "instant_per_pair": return "瞬伤"
-		"thorns": return "荆棘"
-		"field": return "力场"
-		"unyielding", "unyielding_once": return "不屈"
-		"leech": return "虹吸"
-		"heal", "heal_same": return "治愈"
-		"upgrade_sel": return "升级"
-		"strength", "strength_set": return "力量"
-		"leap_perm": return "跃升"
-		"atk_add": return "攻击值加成"
-		"mingding": return "命定"
-		"yaocai_use_add": return "曜彩次数增加"
-		"yaocai": return "曜彩投掷"
-		"reroll": return "重投"
-		"atk_level_add", "atk_level_set": return "攻击等级变化"
-		"def_level_add": return "防御等级变化"
-	return op
+	return str(FX_NAMES.get(op, op))
 
 # 曜彩弹窗窄窗口适配：基准 580×500，右缘 40px 固定；窗口变窄时整体收窄，
 # 六面卡片从 3 列降为 2/1 列并同步降低卡片最小宽度，避免固定尺寸把弹窗顶出屏幕
@@ -1092,6 +1239,7 @@ func _on_reroll() -> void:
 	if picks.is_empty():
 		return
 	_human_active = false   # 演出期间锁输入，避免动画中点选/确认
+	_update_sel_sum()       # 投骰期间隐藏中心合计，停稳后再按新点数显示
 	# 不立即 refresh：先保持旧骰面，等翻滚停稳后再一次性显示新点数（少一次重建、也不剧透）
 	info_label.text = ""
 	dice_tip.text = ""
@@ -1110,11 +1258,9 @@ func _on_reroll() -> void:
 func _on_confirm() -> void:
 	if not _human_active:
 		return
-	if _need > 0 and _sel.size() != _need:
-		info_label.text = "[center]必须恰好选 %d 颗！[/center]" % _need
-		return
-	if _need == 0 and _sel.size() < 1:
-		info_label.text = "[center]至少选 1 颗！[/center]"
+	if not _selection_ready():
+		info_label.text = "[center]%s[/center]" % (
+			("必须恰好选 %d 颗！" % _need) if _need > 0 else "至少选 1 颗！")
 		return
 	if not battle.commit_selection(0, _phase, _sel.duplicate()):
 		info_label.text = "[center]提交失败，请重新选择[/center]"

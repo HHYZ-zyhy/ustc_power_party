@@ -6,7 +6,7 @@ extends RefCounted
 # d4 正四面体 / d6 立方 / d8 正八面体 / d12 正十二面体（曜彩骰与 d6 同为立方）
 # 注意：_faces_for() 返回的 faces 是共享只读数据，调用方不得修改（刻字与停骰都直接读它）
 
-const TIER_COLOR := {4: Color(0.451, 0.910, 0.988), 6: Color(0.765, 0.365, 0.969), 8: Color(0.969, 0.812, 0.682), 12: Color(0.34, 0.29, 0.55)}
+const TIER_COLOR := {4: Color(0.451, 0.910, 0.988), 6: Color(0.765, 0.365, 0.969), 8: Color(0.992157, 0.698039, 0.419608), 12: Color(0.34, 0.29, 0.55)}
 const TIER_TEXT := {4: Color(0.05, 0.20, 0.25), 6: Color(1.0, 0.93, 1.0), 8: Color(0.30, 0.15, 0.05), 12: Color(0.92, 0.88, 1.0)}
 const YAOCAI_COLOR := Color(0.30, 0.25, 0.50)
 const YAOCAI_TEXT := Color(0.92, 0.88, 1.0)
@@ -22,14 +22,17 @@ const TETRA_YAW_DEG := -12.0
 
 # 静态选骰视图的正视姿态：结果面正对镜头，再绕屏幕水平轴轻微上仰，
 # 正面朝上翻、露出一点底面/侧面厚度（参考原作选骰截图；负号即为该方向）
-const DISPLAY_TILT_DEG := -18.0
-# 三角面（d4/d8）需要更大一点的上翻，才能像参考图一样露出底侧面
-const DISPLAY_TILT_TRI_DEG := -28.0
+# 倾角按骰型区分：d4/d12 保持原样，d6 略减，d8 压到接近正视（结果面正对玩家）
+const DISPLAY_TILT_TETRA_DEG := -28.0
+const DISPLAY_TILT_OCTA_DEG := -8.0
+const DISPLAY_TILT_HEX_DEG := -14.0
+const DISPLAY_TILT_D12_DEG := -18.0
 
 # 面数据（键 yc:<曜彩名> / n:<面数>）、网格、材质缓存：键见 _mesh_key_for
 static var _spec_cache: Dictionary = {}
 static var _mesh_cache: Dictionary = {}
 static var _mat_cache: Dictionary = {}
+static var _sel_mat_cache: Dictionary = {}
 static var _env: Environment
 
 # 投骰演出与静态小视口共用同一套灯光/环境光（方向光 + 环境光避免深色 d12 背面糊成黑块）
@@ -301,18 +304,22 @@ static func _rest_rotation(d: Die, faces: Array, fi: int) -> Basis:
 	var x := y.cross(target)
 	return Basis(x, y, target) * (faces[fi].basis as Basis).inverse()
 
+# 静态视图倾角按骰型选择：面数即可区分 d4/d6/d8/d12（曜彩骰同为 6 面立方）。
+# d4/d12 保持原倾角；d6 按用户反馈略减；d8 压到接近 0，让结果面正视玩家。
+static func _display_tilt_for(faces: Array, fi: int) -> float:
+	if (faces[fi].verts as Array).size() == 3:
+		return DISPLAY_TILT_TETRA_DEG if faces.size() == 4 else DISPLAY_TILT_OCTA_DEG
+	return DISPLAY_TILT_HEX_DEG if faces.size() == 6 else DISPLAY_TILT_D12_DEG
+
 # 静态视图姿态：结果面法线对准镜头方向，再绕镜头右轴（屏幕与水平面的交线）上仰
-# DISPLAY_TILT_DEG；返回的是骰子整体旋转。仅用于 DieView，不改变投骰演出的物理停姿。
+# DISPLAY_TILT_*；返回的是骰子整体旋转。仅用于 DieView，不改变投骰演出的物理停姿。
 static func display_rotation(faces: Array, fi: int, view_dir: Vector3) -> Basis:
 	var target_n := view_dir.normalized()
-	var up_ref := Vector3.UP
-	if absf(target_n.dot(up_ref)) > 0.95:
-		up_ref = Vector3.FORWARD
-	var target_up := (up_ref - target_n * target_n.dot(up_ref)).normalized()
-	var target_x := target_up.cross(target_n)
-	var target := Basis(target_x, target_up, target_n)
+	var target := _face_basis(target_n)
+	var target_x: Vector3 = target.x
+	var target_up: Vector3 = target.y
 	var r := target * (faces[fi].basis as Basis).inverse()
-	var tilt: float = DISPLAY_TILT_TRI_DEG if (faces[fi].verts as Array).size() == 3 else DISPLAY_TILT_DEG
+	var tilt: float = _display_tilt_for(faces, fi)
 	r = Basis(target_x, deg_to_rad(tilt)) * r
 	# 三角形面（d4/d8）在正视姿态下再绕面法线转一下，保证一个顶点朝上、底边水平，
 	# 否则某些面会呈现倒三角；旋转不改变结果面朝向。
@@ -333,6 +340,23 @@ static func _triangle_top_yaw(f: Dictionary, r: Basis, screen_x: Vector3, screen
 			best_angle = atan2(py, p.dot(screen_x))
 	return PI * 0.5 - best_angle
 
+# 旋转后骰体（含选中/命定描边壳）在镜头右轴/上轴上的投影包围盒（世界单位）。
+# DieView 用它把骰子居中并按需放大相机 size，避免 d4/d8 的尖顶或 d12 的边角被 SubViewport 裁掉。
+# 面数据共享只读；凸多面体取所有面顶点的 min/max 即为包围盒，不必去重。
+static func display_bounds(faces: Array, rot: Basis, right: Vector3, up: Vector3, shell: float) -> Rect2:
+	var min_r := INF
+	var max_r := -INF
+	var min_u := INF
+	var max_u := -INF
+	for f in faces:
+		for v in f.verts:
+			var p: Vector3 = rot * ((v as Vector3) * shell)
+			min_r = minf(min_r, p.dot(right))
+			max_r = maxf(max_r, p.dot(right))
+			min_u = minf(min_u, p.dot(up))
+			max_u = maxf(max_u, p.dot(up))
+	return Rect2(min_r, min_u, max_r - min_r, max_u - min_u)
+
 # 静态视图的刻字朝向：面法线朝外、文字上沿尽量对齐屏幕竖直方向。
 # 在 pivot 旋转确定后按“世界朝向 → mesh 局部”反算，任何面/任何姿态都不会歪。
 static func align_display_labels(mesh: MeshInstance3D, faces: Array, pivot: Basis) -> void:
@@ -342,16 +366,7 @@ static func align_display_labels(mesh: MeshInstance3D, faces: Array, pivot: Basi
 		if lab == null:
 			continue
 		var n := (pivot * ((faces[i].normal as Vector3))).normalized()
-		var up_ref := Vector3.UP
-		if absf(n.dot(up_ref)) > 0.95:
-			up_ref = Vector3.FORWARD
-		var y := (up_ref - n * n.dot(up_ref)).normalized()
-		var x := y.cross(n)
-		lab.transform = Transform3D(inv * Basis(x, y, n), lab.transform.origin)
-
-# 刻字朝向（不依赖 pivot 的测试/工具接口）
-static func display_label_basis(f: Dictionary) -> Basis:
-	return _face_basis((f.normal as Vector3).normalized())
+		lab.transform = Transform3D(inv * _face_basis(n), lab.transform.origin)
 
 # 正四面体：任选一个非结果面作为底面，结果面到竖直方向夹角固定为 arccos(1/3)≈70.53°；
 # 在三个候选底面中选“文字顶端最朝上”的一个，避免数字歪倒；最后绕竖直轴转开
@@ -465,4 +480,21 @@ static func _material_for(d: Die, spec: Dictionary) -> StandardMaterial3D:
 		mat.emission = spec.color
 		mat.emission_energy_multiplier = 0.12
 	_mat_cache[key] = mat
+	return mat
+
+# 选中骰的材质变体：在基础材质上只加「一点」高光——镜面更亮、粗糙度略降，
+# 再叠极轻自发光提亮；骰体仍完全不透明，未选中的同型骰子不受影响（材质各存一份缓存）。
+# 自发光只加 0.05：再高会让亮色骰（如 d4 亮青）偏白发粉，失去原本配色
+static func selected_material_for(d: Die, spec: Dictionary) -> StandardMaterial3D:
+	var key := _mesh_key_for(d, spec)
+	if _sel_mat_cache.has(key):
+		return _sel_mat_cache[key]
+	var mat: StandardMaterial3D = _material_for(d, spec).duplicate() as StandardMaterial3D
+	var base_glow: float = mat.emission_energy_multiplier if mat.emission_enabled else 0.0
+	mat.roughness = 0.50
+	mat.metallic_specular = 0.40
+	mat.emission_enabled = true
+	mat.emission = spec.color
+	mat.emission_energy_multiplier = base_glow + 0.05
+	_sel_mat_cache[key] = mat
 	return mat
