@@ -877,6 +877,8 @@ func _t_on_damaged_rule() -> void:
 	var s: Dictionary = b.settle()
 	_check(s.dmg == 2 and s.dmg2 == 2, "连击两次均 8−6", "%s/%s" % [s.dmg, s.dmg2])
 	_check(b.players[0].hp == 24, "两次≤5 各瞬伤3 共6", str(b.players[0].hp))
+	# 受伤被动瞬伤也必须进入战绩「触发」统计（此前 on_damaged 直调 damage，漏记 instant）
+	_check(b.stats[1].fx.get("instant", 0) == 2, "战绩记录受伤瞬伤来源", str(b.stats[1].fx))
 	var b2 := _mk("shaonianban", "ai")
 	b2.players[0].dice[4].value = 8
 	b2.players[0].dice[2].value = 6

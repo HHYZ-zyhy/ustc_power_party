@@ -37,13 +37,13 @@ func _ready() -> void:
 		b.pressed.connect(_on_char.bind(id))
 		chars_grid.add_child(b)
 		_char_btns[id] = b
-	for name in GameData.YAOCAI.keys():
+	for yc_name in GameData.YAOCAI.keys():
 		var b := Button.new()
-		b.text = name
+		b.text = yc_name
 		b.custom_minimum_size = Vector2(120, 40)
-		b.pressed.connect(_on_yc.bind(name))
+		b.pressed.connect(_on_yc.bind(yc_name))
 		ycs_grid.add_child(b)
-		_yc_btns[name] = b
+		_yc_btns[yc_name] = b
 	start_btn.pressed.connect(_on_start)
 	glossary = GlossaryPanel.new()
 	add_child(glossary)
@@ -78,14 +78,14 @@ func _on_char(id: String) -> void:
 	_refresh_yc()
 	_update_info()
 
-func _on_yc(name: String) -> void:
+func _on_yc(yc_name: String) -> void:
 	if _sel_char == "" or not GameData.CHARACTERS.has(_sel_char):
 		return
 	if int(GameData.CHARACTERS[_sel_char].yc) == 0:
 		return
-	if not GameData.YAOCAI.has(name):
+	if not GameData.YAOCAI.has(yc_name):
 		return
-	_sel_yc = name
+	_sel_yc = yc_name
 	_refresh_yc()
 	_update_info()
 

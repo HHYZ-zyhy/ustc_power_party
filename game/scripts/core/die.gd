@@ -20,7 +20,9 @@ func upgrade() -> bool:
 
 func roll(rng: RefCounted) -> void:
 	if is_yaocai():
-		face = rng.randi_range(0, 5)
-		value = GameData.YAOCAI[yaocai].faces[face].points
+		# 面数取曜彩面表实际长度（当前均为 6 面），避免调用点写死面号范围
+		var faces: Array = GameData.YAOCAI[yaocai].faces
+		face = rng.randi_range(0, faces.size() - 1)
+		value = faces[face].points
 	else:
 		value = rng.randi_range(1, sides)

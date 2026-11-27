@@ -20,14 +20,16 @@ var _scroll_seq := 0   # 连点多个效果时，旧滚动协程自动作废
 
 static var _kw_sorted: Array = []
 
-static func kw_bbcode(text: String) -> String:
+static func kw_bbcode(text: String, color: Color = Color(1.0, 0.84, 0.42)) -> String:
 	# 关键词表不变，按长度降序只排一次（长词先替换，避免短词截断长词）
+	# color 默认金色；骰下提示未选中时传浅色（仍是可点击链接，只是不抢眼）
 	if _kw_sorted.is_empty():
 		_kw_sorted = GameData.KEYWORDS.keys()
 		_kw_sorted.sort_custom(func(a: String, b: String) -> bool: return a.length() > b.length())
+	var hex: String = color.to_html(false)
 	var out := text
 	for kw in _kw_sorted:
-		out = out.replace(kw, "[url=%s][color=#ffd66b]%s[/color][/url]" % [kw, kw])
+		out = out.replace(kw, "[url=%s][color=#%s]%s[/color][/url]" % [kw, hex, kw])
 	return out
 
 func _ready() -> void:

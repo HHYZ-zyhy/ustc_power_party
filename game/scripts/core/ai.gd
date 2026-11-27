@@ -41,9 +41,9 @@ func _trigger_bonus(p: Dictionary, combo: Array, phase: String) -> float:
 		values.append(d.value)
 	var sum := Battle.dice_sum(combo)
 	var bonus := 0.0
+	var ptype := "attack" if phase == "attack" else "defense"
 	for pas in p.cfg.passives:
-		var t := "attack" if phase == "attack" else "defense"
-		if pas.t != t:
+		if pas.t != ptype:
 			continue
 		# 条件判定与正式结算完全同口径（唯一实现：Battle.eval_cond）
 		if not Battle.eval_cond(pas.c, p, combo, {"atk_value": sum}):

@@ -87,7 +87,14 @@ func roll(dice_a: Array, dice_b: Array, quick: bool = false) -> void:
 			var tw2 := create_tween()
 			tw2.tween_property(mi, "position:y", hop_h, up_t).set_trans(Tween.TRANS_QUINT).set_ease(Tween.EASE_OUT)
 			tw2.tween_property(mi, "position:y", 0.9, down_t).set_trans(Tween.TRANS_BOUNCE).set_ease(Tween.EASE_OUT)
-	await get_tree().create_timer(total).timeout
+	# 帧驱动等待：不用 SceneTreeTimer（场景释放后它仍会 timeout，协程可能在已释放节点上恢复）；
+	# get_process_delta_time() 受 Engine.time_scale 影响，压力测试仍可快进
+	var elapsed := 0.0
+	while elapsed < total:
+		if not is_inside_tree():
+			return
+		await get_tree().process_frame
+		elapsed += get_process_delta_time()
 	if my_token != _token or not is_inside_tree():
 		return
 	finished.emit()

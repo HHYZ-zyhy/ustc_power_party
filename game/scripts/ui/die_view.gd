@@ -17,7 +17,10 @@ const ENEMY_HINT_HEIGHT := 36.0
 # 静态展示按参考截图：结果面正对玩家，镜头略高于骰心，配合 DieVisuals.display_rotation
 # 绕屏幕水平轴轻上仰，正面翻起、露出一点底面/侧面厚度
 const CAM_NORMAL := Vector3(0.0, 0.40, 3.0)
+# 基础正交 size（竖直世界高度）；d8 等尖顶骰按投影包围盒自动放大 size，避免被 SubViewport 裁切
 const CAM_SIZE := 2.0
+# 骰体（含 1.10 选中壳）最多占渲染区 94%，留描边抗锯齿与悬停 1.04 放大的余量
+const FIT_MARGIN := 0.94
 
 const SEL_COLOR := Color(1.0, 0.85, 0.3)
 const LOCK_COLOR := Color(1.0, 0.45, 0.75)
@@ -174,8 +177,17 @@ func _apply_rest() -> void:
 	var spec: Dictionary = DieVisuals._faces_for(_die)
 	var faces: Array = spec.faces
 	var fi: int = DieVisuals._face_index_for(_die, faces)
-	_pivot.transform = Transform3D(DieVisuals.display_rotation(faces, fi, CAM_NORMAL), Vector3.ZERO)
-	DieVisuals.align_display_labels(_mesh, faces, _pivot.transform.basis)
+	var rot: Basis = DieVisuals.display_rotation(faces, fi, CAM_NORMAL)
+	# 按投影包围盒把骰子移到渲染区正中，并按需放大相机 size：
+	# d4 的尖顶、d8 的上下尖、d12 的边角原本会超出 2.0 的竖直视野被裁掉
+	var right: Vector3 = _cam.basis.x
+	var up: Vector3 = _cam.basis.y
+	var bounds: Rect2 = DieVisuals.display_bounds(faces, rot, right, up, SEL_SHELL_SCALE)
+	var aspect: float = float(_sv.size.x) / float(maxi(1, _sv.size.y))
+	_cam.size = maxf(CAM_SIZE, maxf(bounds.size.y, bounds.size.x / aspect) / FIT_MARGIN)
+	var center: Vector2 = bounds.position + bounds.size * 0.5
+	_pivot.transform = Transform3D(rot, right * (-center.x) + up * (-center.y))
+	DieVisuals.align_display_labels(_mesh, faces, rot)
 
 func _apply_outline() -> void:
 	var show_sel: bool = _selected and not _locked
@@ -183,6 +195,23 @@ func _apply_outline() -> void:
 		_sel_shell.visible = show_sel
 	if _lock_shell != null:
 		_lock_shell.visible = _locked
+	_apply_material(show_sel)
+
+# 选中时换用「选中材质变体」（略亮的高光 + 极轻自发光），取消选中/命定恢复基础材质。
+# 两份材质都按骰型+基色缓存，切换只改 material_override，不重建网格
+func _apply_material(highlight: bool) -> void:
+	if _mesh == null or _die == null:
+		return
+	var spec: Dictionary = DieVisuals._faces_for(_die)
+	var mat: StandardMaterial3D
+	if highlight:
+		mat = DieVisuals.selected_material_for(_die, spec)
+	else:
+		mat = DieVisuals._material_for(_die, spec)
+	if _mesh.material_override == mat:
+		return
+	_mesh.material_override = mat
+	_arm_render()
 
 func set_selected(on: bool) -> void:
 	if _selected == on:

@@ -1,7 +1,19 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://scripts/ui/battle_ui.gd" id="1"]
 [ext_resource type="Script" path="res://scripts/ui/dice_roll.gd" id="2"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_selsum_ring"]
+bg_color = Color(0.93, 0.96, 1, 0.94)
+border_width_left = 10
+border_width_top = 10
+border_width_right = 10
+border_width_bottom = 10
+border_color = Color(0.2, 0.45, 0.93, 1)
+corner_radius_top_left = 64
+corner_radius_top_right = 64
+corner_radius_bottom_right = 64
+corner_radius_bottom_left = 64
 
 [node name="Battle" type="Control"]
 anchors_preset = 15
@@ -139,6 +151,61 @@ offset_top = 380.0
 offset_right = 560.0
 offset_bottom = 560.0
 grow_horizontal = 2
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="SelSum" type="Control" parent="."]
+unique_name_in_owner = true
+visible = false
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -120.0
+offset_top = -70.0
+offset_right = 120.0
+offset_bottom = 90.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="SelSumRing" type="Panel" parent="SelSum"]
+unique_name_in_owner = true
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -60.0
+offset_right = 60.0
+offset_bottom = 120.0
+grow_horizontal = 2
+mouse_filter = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_selsum_ring")
+
+[node name="SelSumValue" type="Label" parent="SelSum/SelSumRing"]
+unique_name_in_owner = true
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_colors/font_color = Color(0.12, 0.32, 0.78, 1)
+theme_override_font_sizes/font_size = 64
+text = "0"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="SelSumTitle" type="Label" parent="SelSum"]
+unique_name_in_owner = true
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = -36.0
+grow_horizontal = 2
+grow_vertical = 0
+mouse_filter = 2
+theme_override_colors/font_color = Color(0.62, 0.72, 0.92, 1)
+theme_override_font_sizes/font_size = 18
+text = "我方选骰合计"
 horizontal_alignment = 1
 vertical_alignment = 1
 

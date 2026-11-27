@@ -6,8 +6,9 @@
 - 规则散文依据：`参考素材/科大战力党-构思.txt`
 - 关键词官方定义：`参考素材/效果/page1~4.jpg`；曜彩骰官方面表：`参考素材/曜彩骰定义/*.jpg`（文件名仍为旧曜彩名，新名对照见 README）
 - 标注 ⚠ 的条目为参考素材未定义、由设计补全的内容，待确认后去掉标记。
-- **最后更新：2026-11-26（选骰 UI 第五轮微调）**：无规则/数值改动；选中金边、DiceTip、敌方骰块位置微调。
+- **最后更新：2026-11-27（第三轮：全量代码审查与优化）**：无规则/数值改动；修复受伤被动瞬伤战绩漏记、骇入跨回合残留与投骰计时器生命周期三处问题，并完成效果名/伤害公式/选骰判断/敌方选骰过滤等去重。
   - 2026-11-26：3D 骰外观重做（贴面数字、不透明、精确正多面体）→ 同日第二轮（62° 镜头、d4 12° 偏转、对手骰行移入信息栏）→ 同日第三轮（代码去重与共享组件）→ 同日第四轮（结果面朝玩家 + 18°/28° 上仰，正交镜头）→ 同日第五轮（选中金边加粗、DiceTip 上提、敌方骰块移到信息条框外名字正下方，Grid 5 列）。
+  - 2026-11-27：静态 3D 骰投影包围盒居中 + 按骰型自动放大正交镜头 size（修 d4/d8/d12 顶端被 SubViewport 裁切）；八面骰主色 #FDB26B；同日第二轮按反馈拆出 d8/d6 独立倾角并加入页面中心选骰合计；同日第三轮全量审查与优化（keywords 1207）。
   - 2026-11-25：方向调整（云存储暂停，稳定性 → 局域网 → AI → 美术）+ 稳定性两轮（测试骨架、幂等守卫）。
   - 2026-11-17：界面打磨三轮（选卡选中态/居中、战绩面板、曜彩遮罩、按钮与信息栏防重叠）。
   - 完整决策见 §10，进度见 §11。
@@ -381,15 +382,83 @@
 - 测试：`ui_smoke` 更新为「敌方骰块不在敌条内 / 与名字左对齐 / 块宽 ≤884 不压横幅文字 / Grid 5 列 / 标题与总计同一行 / 6 颗骰换行后不越界」；`UI SMOKE OK`。
 - 验证：keywords `pass=1206 fail=0`；sim 12 行；ui_play `UI PLAY DONE`；ui_smoke `UI SMOKE OK`；ui_stress 30 局 + 100 次往返 290 项 0 失败 0 泄漏；shot 六图重生成并目检（选中金边加粗、提示上提、敌方骰块框外；另用 6 颗敌方骰探针检查第二行换行后删除）。无规则/数值改动。
 
-## 11. 进度与待办（2026-11-26）
+### 2026-11-27（骰顶裁切修复 + 八面骰配色）
+- 用户反馈：选中金边厚度、选骰提示、敌方骰在名字下方的观感均已合适；但待选骰子的顶端仍有 15–20px 被挡住，怀疑是选骰提示的背景色；另请把八面骰主色设为 `#FDB26B`。
+- 根因（不是提示遮挡）：静态 3D 骰在 SubViewport **顶部被裁切**。原正交镜头竖直视野固定 2.0，d4 的尖顶、d8 的上下尖、d12 的边角在投影后超出视野；且旋转后包围盒中心偏离原点（d4 偏上），实测 d4 顶端被裁约 10px、d8 上下各裁约 9px、d12 纵向 109px > 108px。
+- 实现：
+  - `DieVisuals.display_bounds(faces, rot, right, up, shell)`：按镜头右/上轴计算旋转后骰体（含 1.10 选中壳）的投影包围盒；凸多面体取所有面顶点的 min/max 即可。
+  - `DieView._apply_rest()`：按包围盒把 pivot 沿镜头右/上轴平移到渲染区正中；正交 `size` 取 `max(2.0, max(bbox_h, bbox_w/aspect) / 0.94)`。`FIT_MARGIN = 0.94` 预留描边抗锯齿与悬停 1.04 放大的余量。包围盒按 1.10 选中壳计算（玩家/敌方统一，敌人若被选中也不裁）；d4/d6/d12 基本保持原大小，d8 相机 size 自动放大到约 2.5 以完整显示上下尖。
+  - `TIER_COLOR[8]` 改为 `#FDB26B`（`Color(0.992157, 0.698039, 0.419608)`），文字色仍用深棕 `TIER_TEXT[8]`；d8 的投骰演出与静态视图共用该色。
+- 测试：用 d4/d6/d8/d12 双尺寸（128×108 / 96×96）探针读取 SubViewport alpha 包围盒，全部 `edge=false`（无裁切）：玩家 d4 10–101、d8 4–103、d12 8–99；敌方 d4 13–85、d8 3–92、d12 10–85。探针验证后删除。
+- 验证：keywords `pass=1206 fail=0`；sim 12 行；ui_smoke `UI SMOKE OK`；ui_play `UI PLAY DONE`；soak 2000 局 0 失败（69186 项检查）；fuzz 20000 步 0 失败（482708 项检查）；ui_stress 30 局 + 100 次往返 290 项 0 失败 0 泄漏；shot 六图重生成并目检（d4 尖顶不再裁切，顶部留 10px）。无规则/数值改动。
+
+### 2026-11-27（第二轮：静姿倾角按骰型 + 中心选骰合计）
+- 用户反馈：
+  1. 八面骰选骰（含对手选骰展示）时倾角再小一点，把结果面正视展示给玩家；六面骰倾角也略微减小；d4/d12 观感很好，保持不动。
+  2. 玩家选骰与对手选骰时，自动算出当前选骰点数和，在页面中心附近展示（参考 `参考素材/原作截图/进攻方选骰子.png` 的蓝色圆环与 `防御时显示界面.png` 的敌方合计）。
+- 实现：
+  - 倾角按骰型拆成独立常量：`DISPLAY_TILT_TETRA_DEG=-28°`（d4 不变）、`DISPLAY_TILT_OCTA_DEG=-8°`（d8 压小、结果面接近正视）、`DISPLAY_TILT_HEX_DEG=-14°`（d6/曜彩由 -18° 略减）、`DISPLAY_TILT_D12_DEG=-18°`（d12 不变）。`display_rotation()` 用面数选倾角（三角面 4 面 = d4、8 面 = d8；其余 6 面 = d6/曜彩、12 面 = d12），不触碰投骰演出的 `_rest_rotation()` 物理停姿。
+  - `battle.tscn` 新增页面中心 `SelSum`：蓝色圆环（`StyleBoxFlat` 圆角 + 10px 蓝边）+ 大号蓝字 + 「我方/敌方选骰合计」标题，全部 `mouse_filter=IGNORE`，不挡点击；纵向按屏幕中心锚点，圆环底 630px < DiceTip 664px。
+  - `battle_ui._update_sel_sum()` 在 `refresh()` 中更新：玩家阶段（`_human_active`）实时显示 `Battle.dice_sum(_sel)`；敌方提交选骰后置 `_enemy_sum_shown=true`，显示其 `p.sel` 合计（过滤已移除的曜彩骰），0.9s 后隐藏；投骰/重投演出开始与结算前主动隐藏，避免与 `Big` 结算文字重叠。
+  - 求和统一走 `Battle.dice_sum()`，与攻击值预览、敌方骰块「总计」、结算同口径。
+- 测试：`ui_smoke` 新增断言：我方/敌方数值与标题、非选骰阶段隐藏、圆环位于页面中心附近且在 DiceTip 之上；倾角方面 d8 face-on dot > 0.985、d6 > 0.96、d4 < 0.90、d12 > 0.94。
+- 视觉：shot 六图重生成，`shot_select.png` 中心显示 0、`shot_dice_selected.png` 随选中两颗显示实时和（本次为 4）；另用 12 颗 d4/d6/d8/d12 临时探针目检（d8 结果面正视、d6 倾角略减），探针与临时日志已删除。
+- 验证：keywords `pass=1206 fail=0`；sim 12 行；ui_smoke `UI SMOKE OK`；ui_play `UI PLAY DONE`；soak 2000 局 0 失败（68966 项）；fuzz 20000 步 0 失败（482914 项）；ui_stress 30 局 + 100 次往返 290 项 0 失败 0 泄漏；无规则/数值改动。
+
+### 2026-11-27（第三轮：全量代码审查与优化）
+- 用户要求：检查代码有没有 bug，然后进行一次全部优化；之后完善 5 份描述文档。
+- 修复的 bug/健壮性：
+  - **受伤被动瞬伤漏记战绩**：`_eval_on_damaged()` 对 `instant` 直调 `damage()`，绕过 `apply_fx()`，导致 AI 学院「受伤≤5 瞬伤3」在战绩「触发」统计里从不显示（commit 阶段同类效果却会显示）。改为所有 on_damaged 效果统一走 `apply_fx()`，并新增 keywords 断言（两次受伤被动瞬伤 → `stats[1].fx.instant == 2`）。
+  - **骇入跨回合残留**：`settle()` 在已分胜负时跳过 `_apply_hacks()`，`hack_pending` 不会被清除；`round_open()` 现在每回合重置该字段，KO 等跳过路径不会把上回合骇入带入后续状态。
+  - **投骰演出计时器生命周期**：`dice_roll.roll()` 由 `SceneTreeTimer` 改为帧驱动等待（与 `battle_ui._wait()` 同口径，`get_process_delta_time()` 仍受 `Engine.time_scale` 影响），场景释放后不会在已释放节点上恢复；`battle_ui._animate_roll()` 在等待结束/离开场景树后增加 `is_instance_valid(roller)` 守卫。
+- 优化/去重（无行为变化）：
+  - `Battle._damage_after_defense()`：主伤害与每段连击共用同一有效伤害公式（洞穿/力场），避免两处手写分支。
+  - `battle_ui.FX_NAMES`：效果中文名唯一映射，`_fx_text()` / `_fx_name()` 不再各维护一份文案。
+  - `battle_ui._selection_ready()`：统一「是否选够」判断，刷新按钮、骰行提示与 `_on_confirm` 共用。
+  - `battle_ui._enemy_selected()`：统一敌方已选骰过滤（骰块「总计」与中心合计共用，过滤已移除骰）。
+  - `DieVisuals.display_rotation()` / `align_display_labels()` 复用 `_face_basis()`；删除未被引用的 `display_label_basis()`。
+  - `AIController._trigger_bonus()` 阶段映射移到循环外；`select_ui` 循环变量改名，避免遮蔽 `Node.name`。
+  - 同日收尾（用户追问「还有什么可优化」）：`Battle.yaocai_usable()` 改为只判 `yaocai_reason()==""`，可用性/中文原因不再维护两份条件链；`Die.roll()`、`Battle.is_mingding()`、`commit_selection` 面号守卫统一取 `GameData.YAOCAI[].faces.size()`，不再写死 6；`select_ui._on_yc()` 形参改名。
+- 测试：keywords 36 组 **1207** 断言（新增受伤被动瞬伤战绩断言）；其余测试同步复跑。
+- 验证：keywords `pass=1207 fail=0`；sim 12 行；ui_smoke `UI SMOKE OK`；ui_play `UI PLAY DONE`；soak 2000 局 0 失败（69038 项）；fuzz 20002 步 0 失败（482976 项）；ui_stress 30 局 + 100 次往返 290 项 0 失败 0 泄漏；shot 六图重生成并目检（布局与上一轮一致）。无规则/数值改动。收尾复跑：keywords 1207、sim 12 行、ui_smoke OK、ui_play DONE、soak 2000/0（69000 项）、fuzz 20004/0（483188 项）、ui_stress 30+100 290/0、shot 六图目检，无布局回归。
+
+### 2026-11-27（选中骰高光）
+- 用户反馈：「将选中的骰子加一点高光，但不要太多，这样可以使得它更醒目。」
+- 实现：`DieVisuals.selected_material_for()` 为基础材质按「骰型+基色」单独缓存一份选中变体——`roughness 0.65→0.50`、`metallic_specular 0.2→0.40`，并按基色叠 `+0.05` 自发光（暗色骰在原 0.12 上叠加）。骰体保持完全不透明，未选中的同型骰仍用基础材质。
+- `DieView._apply_outline()` 增加 `_apply_material()`：选中/取消选中只切换 `material_override` 并补一帧渲染，不重建网格、不影响已有金边/命定壳层；敌方小骰与投骰演出不启用该变体。
+- 取舍：不使用半透明发光壳（会破坏骰体不透明）；自发光只加 0.05，再高会让 d4 亮青等亮色骰发白、失去原本明暗层次；镜面提升取温和值，避免大块白色光斑。
+- 验证：ui_smoke `UI SMOKE OK`；ui_play `UI PLAY DONE winner=1 round=9`；shot 六图重跑并目检（选中骰面亮度提升、未选中骰不变）。无规则/数值改动。
+
+### 2026-11-27（骰下提示：取消面数标注，可能效果浅色 / 生效加深）
+- 用户要求（原话）：「取消骰子面数的标注，然后可能的效果在选中前呈浅色，如果选中的骰子会使该效果生效就将其颜色加深。」
+- 骰下提示不再拼 `_die_head()`（六面/四面/八面/十二面），普通骰只列「参与某个刚好 need 颗的选择即可触发」的效果词；无效果即留白，悬停 tooltip 仍保留骰型（不是行内标注）。
+- 颜色两态：`HINT_FX_DIM`（浅灰蓝）表示「可能出现」；`HINT_FX_LIT`（金色，与预期效果同色）表示该骰已入选且**确定会生效**。浅色仍可点击查看关键词解释（`GlossaryPanel.kw_bbcode()` 新增颜色参数，默认值仍是原金色）。
+- 触发表：新增 `battle_ui._active_fx(p, sel)` 返回「效果名 → 来源次数」，替代 `_push_preview_fx()`，供预期效果行（含连击×N）使用；骰下提示的加深另由 `_die_lit_fx()` 逐骰判定归属（见同日修正）。
+- 曜彩骰保留骰名与当前面效果：该面效果随骰入选才生效；敌方骰块在其提交选骰后同样转为金色，展示上回合骰子时保持浅色。
+- 测试：`ui_smoke` 改为断言普通骰提示不含面数文字、未选中不含金色、选满触发连击后已选骰提示含金色；多来源连击改断言 `_active_fx` 计数为 3。
+- 验证：ui_smoke `UI SMOKE OK`；ui_play `UI PLAY DONE winner=1 round=6`；shot 六图重跑；临时探针目检浅色/金色两态（探针已删除）。无规则/数值改动。
+- **同日修正（用户逐角色验收后，最终口径）**：「加深」不再按当前局部选骰实时求值，而是按「确定会生效」判定——
+  - 对子类条件（`has_pair`/`pairs_ge`）：加骰不会破坏对子，选中对子即可加深；只加深真正凑成对子的骰（同点数 ≥2），非对子骰保持浅色。
+  - 其余条件（`all_even`/`all_same`/`all_eq_value`）：必须选满 `_need` 颗且条件成立才加深；化学「全偶数」选到两颗偶数不再提前变金。
+  - 提示范围：对子类只在「该骰能在触发组合里凑成对子」时标注（信息/核科学只在相同点数的骰下显示提示）；网安 `sum_ge`、地球 `not_all_eq_value`（力量=攻击值×50%）、工程 `round_end` 不再逐骰标注；地球只标注全为 6 时的力量×100% + 治愈。
+  - 生命 `unyielding_once` 在 `unyielding_used` 后不再显示（逐骰提示与预期效果行同时隐藏）。
+  - 实现：新增 `_die_lit_fx()`（逐骰判定归属与是否确定生效）、`_die_hint_lit()`（曜彩骰/普通骰分流）、`_hint_fx_texts()`（不屈一次性过滤）、`_has_value_twin()`、`_value_counts()`、`_fx_ctx()`；`HINT_COND_TYPES` 收缩为 `has_pair`/`pairs_ge`/`all_eq_value`/`all_even`/`all_same`，新增 `HINT_PAIR_CONDS`。中心「预期效果」行仍按当前选骰实时预览（沿用原行为），与骰下金色判定分开。
+  - 测试：`ui_smoke` 增加逐角色口径断言（网安/工程无提示、化学选满才金、信息只标同点骰且选中对子即金、核科学只金凑对骰、生命不屈用后无提示、地球只显示全 6 力量×100%+治愈）。
+- 同日第二轮（提示逻辑去重，无行为变化）：`_selection_ready()` 拆出 `_sel_ready(sel, need)` 唯一实现，`_die_lit_fx()` 不再隐式读全局 `_sel`；新增 `_hint_passives()`（阶段被动 → `HINT_COND_TYPES` → 有效果词，三重过滤只此一处）供浅色/金色共用，`_die_fx_hints()` 预计算一次并复用同一求值 ctx；新增 `_yaocai_face_fx()` 收敛曜彩当前面效果取表（骰下提示/金色加深/预期效果行三处共用），`_fx_hint_ok()` 收敛不屈一次性过滤（`p.get("unyielding_used", false)`，测试假玩家字典缺字段也安全）；`_fx_hint_item()` 形参改名 `lit`。验证：keywords 1207、sim 12 行、ui_smoke OK、ui_play DONE、soak 2000/0（68920 项）、fuzz 20001/0（482779 项）、invalid 3000 步 0 失败（3008 项）、ui_stress 30+100 290 项 0 失败 0 泄漏、shot 六图目检无回归。
+
+## 11. 进度与待办（2026-11-27）
 
 > 2026-11-25 用户调整优先级：**P1 稳定性 → P2 局域网 1v1 → P3 AI 强化 → P4 美术设计**；云服务/战绩存储暂缓。旧 P1 界面打磨已完成三轮，剩余视觉细修并入 P4 或按 playtest 反馈随时处理；`server/` 原样保留，不删除、不继续投入。
 
 已完成（v1 单机 PVE 全流程可玩，验证链全绿；详细决策见 §10）：
 - 核心逻辑：分步 API 与结算时序（跃升/骇入先改点再求和；KO 后停止；地球攻击后；连击叠加；命定锁定/重投必带）；12 角色/11 曜彩；Crypto。
-- 测试体系：keywords 36 组 1206（pass=1206 fail=0）；sim 792 局；ui_play；ui_smoke；shot 六图（含人类可操作阶段选中态 `shot_dice_selected.png`）；2026-11-25 新增 soak（2000 局）、fuzz_actions（valid 2 万步）、ui_stress（full/lifecycle），基线全绿（soak 0 失败 3.5s、fuzz 0 失败、lifecycle 100 次往返 0 泄漏）。
+- 测试体系：keywords 36 组 1207（pass=1207 fail=0）；sim 792 局；ui_play；ui_smoke；shot 六图（含人类可操作阶段选中态 `shot_dice_selected.png`）；2026-11-25 新增 soak（2000 局）、fuzz_actions（valid 2 万步）、ui_stress（full/lifecycle），基线全绿（soak 0 失败 3.5s、fuzz 0 失败、lifecycle 100 次往返 0 泄漏）。
 - UI/表现：选卡（空选/推荐/保留）、战斗布局、曜彩六面表 3×2、HP 条+掉血飘字、效果显示、窄窗自适应、战绩页（无折线图）、3D 真骰+逐面数字+重投短动画、选骰界面 3D 化（双方候选骰/敌骰立体骰、描边选中、骰下提示）、操作提示/敌方骰来源标题/状态独立行/确认按数量启用（2026-11-12 代码整理）。
-- 3D 骰外观重做（2026-11-26）：数字贴面不悬浮、骰体全不透明、d6/曜彩用 BoxMesh、d4/d8/d12 精确正多面体、CULL_FRONT 不透明反壳描边、压暗保持 alpha=1、d4 刻字扶正；同日第二轮对手骰行改为 96×132 缩小版（提示、不可点击、总计）；同日第四轮选骰静态视图改为结果面朝玩家 + 18°/28° 上仰（正交镜头 size 2.0，露出底面/侧面），取代 62° 顶面方案；同日第五轮选中金边壳层 1.10 加粗、DiceTip 上提 16px、敌方骰块移到信息条框外名字正下方（Grid 5 列、第 6 颗换行、总计在来源标题行右侧）；验证链全绿，用户开窗确认新外观/布局仍待反馈。
+- 3D 骰外观重做（2026-11-26）：数字贴面不悬浮、骰体全不透明、d6/曜彩用 BoxMesh、d4/d8/d12 精确正多面体、CULL_FRONT 不透明反壳描边、压暗保持 alpha=1、d4 刻字扶正；同日第二轮对手骰行改为 96×132 缩小版（提示、不可点击、总计）；同日第四轮选骰静态视图改为结果面朝玩家 + 18°/28° 上仰（正交镜头 size 2.0，露出底面/侧面），取代 62° 顶面方案；同日第五轮选中金边壳层 1.10 加粗、DiceTip 上提 16px、敌方骰块移到信息条框外名字正下方（Grid 5 列、第 6 颗换行、总计在来源标题行右侧）；2026-11-27 按投影包围盒居中 + 按骰型自动放大正交 size（修 d4/d8/d12 骰顶/边角被 SubViewport 裁切），八面骰主色改 #FDB26B；同日第二轮 d8 静姿倾角 -8°（结果面正视玩家）、d6 -14°、d4/d12 保持；验证链全绿，用户开窗确认新外观/布局仍待反馈。
+- 中心选骰合计（2026-11-27 第二轮）：玩家选骰时页面中心蓝圈实时显示 `Battle.dice_sum(_sel)`；敌方提交选骰后显示其合计 0.9s；投骰/重投/结算期间隐藏，避免与结算横幅重叠（见 §10 同日第二轮）。
+- 选中骰高光（2026-11-27）：`DieVisuals.selected_material_for()` 按骰型缓存选中材质变体（镜面略亮 + 自发光 +0.05），`DieView._apply_material()` 只切换 `material_override`；未选中骰与投骰演出的骰子不受影响（见 §10 同日「选中骰高光」）。
+- 骰下提示（2026-11-27）：取消面数标注；普通骰只列可能效果，未选中浅色、确定会生效时金色（对子类选中对子即金，全偶数/全相同/全为某值须选满才金）；网安/工程不逐骰标注，地球只标全 6 的力量×100%+治愈；`_active_fx()` 供预期效果行、`_die_lit_fx()` 逐骰判定归属；同日去重：`_hint_passives()`/`_yaocai_face_fx()`/`_sel_ready()`/`_fx_hint_ok()` 各单一实现（见 §10 同日「骰下提示」及其修正/去重）。
+- 代码审查与优化（2026-11-27 第三轮）：修受伤被动瞬伤漏记战绩、骇入跨回合残留、投骰计时器生命周期三处问题；统一效果名映射 `FX_NAMES`、主伤害/连击公式 `_damage_after_defense()`、选骰确认 `_selection_ready()`、敌方已选过滤 `_enemy_selected()`，复用 `_face_basis()` 并删除死函数 `display_label_basis()`；keywords 增至 1207（见 §10 同日第三轮）。
 - 界面打磨（2026-11-17，三轮）：选卡页选中态与 1280px 居中、战绩面板自适应 + 三列表格、曜彩弹窗全屏遮罩、曜彩区滚动条修复、主操作按钮金色启用态、选满提示/确认变金、日志「战报｜」前缀、Esc 关闭弹窗、信息栏 20/8px 内边距、按钮长文案双行化并固定按钮列 260px、长被动+状态行不越屏幕下缘（见 §10 同日三条）。
 - 代码质量：核心结算/AI/界面条件判定与求和/对子/骰池计数统一为静态纯函数；删除转发包装与死常量；灯光/建面/组合枚举复用（2026-11-12，见 §10）。2026-11-26 代码整理轮：按钮样式、骰体+刻字装配、骰行池化、阶段被动过滤、立方骰面表各收敛为一份共享实现（见 §10 同日第三轮）。
 - 数据/文档：xlsx sheet2 面表、核科学池对齐、11 曜彩改名、H 列推荐；五份文档持续同步；参考素材归位、scratch 最小化。
@@ -409,7 +478,7 @@
 - P0 修复：`battle_ui` 异步生命周期（`_run`/`_wait`/`_animate_roll`/`_human_phase`/输入锁/场景返回防重入）；`Battle` 公共 API 守卫（setup/roll_phase/commit_selection/settle/round_close/do_reroll/idx 边界/骰归属）；入口校验（`GameStateData.sanitize`、`select_ui` 裸下标、`battle_ui._ready` 随机对手空表）；`dice_roll` 重入令牌与 `faces[fi]` clamp。
 - 第一轮完成（2026-11-25）：三份测试已落地；`battle.gd` 入口/索引/归属/幂等守卫、`battle_ui` 异步生命周期、`GameStateData.sanitize`、`select_ui` 防重入、`dice_roll` 重入令牌已完成。验证：keywords 1193、sim 12 行、soak 2000 局 0 失败、fuzz 5 万步 0 失败、fuzz invalid 60 步 0 脚本错误、ui_play/ui_smoke 绿；ui_stress 30 局 + 100 往返 0 失败 0 泄漏；shot 六图复核通过。详见 §10 同日条。
 - 复查完成（2026-11-25 第二轮）：同回合 API 幂等收紧（重复 commit/roll_phase、提交后 do_reroll/roll_yaocai 拒绝；`p.sel` + `p.rolled`）；`apply_fx` 最小上下文缺键容错；`settle/round_close/round_open` attacker 守卫；keywords 新增 `_t_api_guards` 并把三处重提用例改为一次提交；fuzz invalid 增加确定性守卫用例；soak/fuzz 校验 `setup` 返回值，soak 校验 `--policy`；`ui_play` 超时退出码 1、`ui_stress` 首帧校验初始化与收尾强制泄漏比较、`shot` 未到战绩页判失败。验证：keywords `pass=1206 fail=0`；sim 12 行；soak 2000 局 0 失败；fuzz valid 5 万步 0 失败；fuzz invalid 60 步 0 失败（含新增守卫用例）；ui_play `UI PLAY DONE`；ui_smoke `UI SMOKE OK`；ui_stress 30 局 + 100 往返 290 项 0 失败 0 泄漏；shot 六图复核通过。详见 §10 同日条。
-- 验收：soak 2000 局 0 失败；fuzz 5 万步 0 崩溃；ui_stress 30 局 + 100 次往返无泄漏；keywords `pass=1206 fail=0`、sim 12 行、ui_play、ui_smoke、shot 六图全绿；用户实玩验收待反馈（含 2026-11-26 新骰外观与敌方骰块）。
+- 验收：soak 2000 局 0 失败；fuzz 5 万步 0 崩溃；ui_stress 30 局 + 100 次往返无泄漏；keywords `pass=1207 fail=0`、sim 12 行、ui_play、ui_smoke、shot 六图全绿；用户实玩验收待反馈（含 2026-11-26 新骰外观/敌方骰块、2026-11-27 骰顶裁切修复/八面骰配色/静姿倾角/中心选骰合计/代码审查轮）。
 - 界面：2026-11-17 三轮界面打磨已完成；剩余视觉细修（战绩表格对齐、效果显示半行残影、键盘快捷键）并入 P4 或按 playtest 反馈随时处理，不再单列阶段（选骰描边强度已于 2026-11-26 第五轮加粗）。
 
 **P2 局域网 1v1（P1 完成后启动；用户 2026-11-25 确认口径）**
@@ -444,7 +513,7 @@
 
 验证命令（cwd 任意；期望输出见 GODOT_GUIDE §3）：
 - `Godot_v4.7.2-stable_win64.exe --headless --path game --import`（新增 class_name 后先跑）
-- `... --headless --path game -s res://tests/keywords.gd`（**改核心结算必跑**，应 `KEYWORDS pass=1206 fail=0`）
+- `... --headless --path game -s res://tests/keywords.gd`（**改核心结算必跑**，应 `KEYWORDS pass=1207 fail=0`）
 - `... --headless --path game -s res://tests/sim.gd`（792 局胜率表，stderr 应无 `Out of bounds`）
 - `... --headless --path game -s res://tests/ui_play.gd`（应 `UI PLAY DONE`）
 - `... --headless --path game -s res://tests/ui_smoke.gd`（应 `UI SMOKE OK`）

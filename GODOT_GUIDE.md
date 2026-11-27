@@ -2,7 +2,13 @@
 
 > 适用机器：当前 Windows 电脑（用户 zyyh2）。引擎版本：Godot 4.7.2 stable。
 > 项目路径：`D:\warrior party\game`
-> 最后更新：2026-11-26
+> 最后更新：2026-11-27
+> - 提示逻辑去重（无行为变化）：`_sel_ready()`/`_hint_passives()`/`_yaocai_face_fx()`/`_fx_hint_ok()` 各单一实现，浅色提示与金色加深共用；`_die_fx_hints()` 预计算提示被动并复用求值 ctx。
+> - 骰下提示两态：取消面数标注（悬停 tooltip 仍保留骰型）；普通骰只列可能效果，未选中浅色、确定会生效时金色（对子类选中对子即金且只金凑对骰，全偶数/全相同/全为某值须选满才金）；网安/工程不逐骰标注，地球只标全 6 的力量×100%+治愈，生命不屈用后不显示；`_active_fx()` 供「预期效果」行、`_die_lit_fx()` 逐骰归属；`GlossaryPanel.kw_bbcode()` 支持颜色参数；无规则/数值改动。
+> - 选中骰高光：`DieVisuals.selected_material_for()`（粗糙度 0.50、镜面 0.40、自发光 +0.05）+ `DieView._apply_material()` 切换材质；未选中骰与投骰演出不变，无规则/数值改动。
+> - 第三轮全量代码审查与优化：修受伤被动瞬伤漏记战绩、骇入跨回合残留、投骰计时器生命周期；统一 `FX_NAMES`/`_damage_after_defense()`/`_selection_ready()`/`_enemy_selected()`，删除死函数 `display_label_basis()`；keywords 1207；同日收尾把曜彩可用性收敛为 `yaocai_reason()` 单一来源、面号上限改取面表长度；无规则/数值改动。
+> - 第二轮静姿倾角 + 中心选骰合计：`DieVisuals._display_tilt_for()` 按骰型取倾角（d4 -28°、d6 -14°、d8 -8°、d12 -18°）；`battle.tscn SelSum` 蓝圈显示双方当前选骰合计；无规则/数值改动。
+> - 骰顶裁切修复：静态 3D 骰按投影包围盒居中并按骰型自动放大正交 `size`（d8 约 2.5，`FIT_MARGIN=0.94`）；八面骰主色 `#FDB26B`；无规则/数值改动。
 > - 选骰 UI 第五轮：选中金边壳层 1.06→1.10、DiceTip 上提 16px（y664–692）、敌方骰块移到信息条框外名字正下方（GridContainer 5 列、第 6 颗换行、总计在来源标题行右侧）；无规则/数值改动。
 > - 代码整理轮：新增 `ButtonStyles` 共享按钮样式、`DieVisuals.make_die_instance()` 共用骰体装配、`_obtain_view/_prune_views` 共用骰行池化、`_phase_passives` 共用阶段被动过滤；无规则/数值改动。
 > - 同日早先：3D 骰贴面/不透明/精确多面体、对手骰行改 96×132 缩小版；同日第四轮选骰静态视图改为结果面朝玩家 + 18°/28° 上仰（正交镜头 size 2.0）。
@@ -81,7 +87,7 @@ Godot_v4.7.2-stable_win64.exe --path . -s res://tests/shot.gd
 | 命令 | 期望 stdout | 实测耗时 | 失败时长什么样 |
 |---|---|---|---|
 | `--import` | 一堆导入日志，无 ERROR | 数十秒（首次）/ 数秒（增量） | 脚本语法错会在此暴露 |
-| `keywords.gd` | `KEYWORDS pass=1206 fail=0` | <1s | 每条失败打印 `FAIL  <断言名>  <实际值>`；退出码 1 |
+| `keywords.gd` | `KEYWORDS pass=1207 fail=0` | <1s | 每条失败打印 `FAIL  <断言名>  <实际值>`；退出码 1 |
 | `sim.gd` | `=== balance sim ===` + 12 行 `win N/132 = XX.X%  avg_rounds N.N` | 约 1-2s | stderr 出现 `Out of bounds get index` = AI 选骰越界（等级超池类问题） |
 | `ui_play.gd` | `UI PLAY DONE winner=N round=N` | 约 1 分钟（逐帧驱动，别以为卡死） | `UI PLAY TIMEOUT round=N` = 假人 60000 帧内没打完（多半是人类阶段软锁），退出码 1；`UI PLAY FAIL` = 战斗场景初始化失败 |
 | `ui_smoke.gd` | `UI SMOKE OK` | <1s | 场景实例化/`_ready` 报错或效果显示/推荐曜彩/HP 条/窄窗/骰型面数与刻字/选骰行（DiceRow 结构、池化、点选、命定锁定、逐骰提示精确性、敌方 96×132、敌方标题与总计、选骰提示、确认按钮、布局 offset）断言失败会直接中断，无 OK |
@@ -138,10 +144,10 @@ Shell 注意：上述命令在 cmd 与 Git Bash 下均可直接运行（命令�
 - `battle.gd` 的 `eval_cond()` / `apply_fx()` 用 `match` 分派字符串，**未命中静默失败**（条件返回 false、效果什么都不做，不报错）：新增条件/效果后必须写 keywords 断言确认真的触发了。
 - 化学「升级」只提升骰型/最大面数，**保留当前点数、不重投**（用户 2026-11-12 裁决确认；DESIGN §2/§9；`_t_upgrade` 断言锁定）。旧文档曾写“按新面数重投”，不要据此给 `upgrade_sel` 补重投逻辑。
 - AI 的 `_trigger_bonus()` 直接调用 `Battle.eval_cond()`（2026-11-12 起不再维护第二套条件判定）；历史教训：旧实现 `all_same` 只判「组合非空」，生命学院防御任意组合都被估成不屈 +6。改 AI 评估后跑 sim 看胜率变化（只记录不调参）。
-- 逐骰提示 `_die_fx_hints()` 与预期效果/结算共用同一套条件：先 `AIController.combinations()` 穷举「刚好 need 颗且含全部命定骰」的选择，再 `Battle.eval_cond()`；`HINT_COND_TYPES` 只放骰值相关 `c.t`。2026-11-12 修复了旧近似判断在命定骰强制入选时误报网安 `sum_ge` 的问题。
+- 逐骰提示 `_die_fx_hints()` 用 `AIController.combinations()` 穷举「刚好 need 颗且含全部命定骰」的选择，再用 `Battle.eval_cond()` 判定；`HINT_COND_TYPES` 只放骰值相关 `c.t`（当前 `has_pair`/`pairs_ge`/`all_eq_value`/`all_even`/`all_same`；对子类只在能凑对的骰下标注且选中对子即可金；网安 `sum_ge`、地球 50% 力量按 2026-11-27 裁决不标）。2026-11-12 修复了旧近似判断在命定骰强制入选时误报网安 `sum_ge` 的问题；浅色/金色两套显示共用 `_hint_passives()`，不要另写过滤。
 - 状态栏 `EnemyStatus/PlayerStatus` 是信息条 VBox 的独立第三行，不要塞回名字/HP/HP 条所在的 HBox（长状态会挤窄 HP 条或顶出条外）。
 - **新测试不要用 `assert`**：release 构建会剥离断言，失败时可能仍 `quit(0)`；稳定性测试统一 `_check` 计数 + `quit(1)`（`keywords.gd` 是正确范例）。
-- **`SceneTreeTimer` 不属于场景**：旧版 `battle_ui._wait()` 用它，场景切换后计时器仍会 timeout，协程可能在已释放节点上恢复；现改为帧驱动（`await process_frame` + `get_process_delta_time()`，每轮检查 `is_inside_tree()`），`dice_roll` 的演出计时也有 token 守卫。
+- **`SceneTreeTimer` 不属于场景**：旧版 `battle_ui._wait()` 用它，场景切换后计时器仍会 timeout，协程可能在已释放节点上恢复；现改为帧驱动（`await process_frame` + `get_process_delta_time()`，每轮检查 `is_inside_tree()`）。`dice_roll.roll()` 的 2.3s 演出计时也已在 2026-11-27 第三轮改为同一帧驱动写法，并保留 token 防重入。
 - **异步流程必须在每个 await 后检查 `is_inside_tree()`/token**：2026-11-25 已给 `battle_ui` 主协程、投骰看门狗、`dice_roll` 加重入/存活守卫，但新增 await 点仍要自己检查；`game/scripts` 关键入口用 `push_error`/`is_inside_tree`，不用 assert。
 - **同回合 API 幂等（2026-11-25）**：`Battle.commit_selection` 成功后 `p.sel` 非空，重复提交直接拒绝；`roll_phase` 用 `p.rolled` 每回合只投一次；提交后 `do_reroll`/`roll_yaocai`/`yaocai_usable` 一律拒绝；`round_close` 必须先 `settle`。写测试/摆状态时不要对同一方重复提交（keywords 的 `_t_field/_t_heal/_t_strength` 已改为一次提交到位）。
 - **浸泡测试复现不靠种子**：`GameRng` 是 Crypto、禁止加 seed；失败时记录双方角色/曜彩、动作序列与掷骰结果/快照，用回放复现。
@@ -153,7 +159,7 @@ Shell 注意：上述命令在 cmd 与 Git Bash 下均可直接运行（命令�
 - 洞穿/力场/反击边界：力场只挡非洞穿的主伤害与连击各段；洞穿取攻击值、破力场且不触发反击（`settle()` 反击条件必须保留 `not summary.pierce`）；瞬伤/荆棘/中毒不吃力场（2026-11-10 修正）。
 - 骇入目标最大骰为 1 点时也变为 2 点（全 1 时抬一颗，用户 2026-11-10 裁决，不是 bug）；不要改成「≤2 时不变」。
 - 3D 骰体装配统一走 `DieVisuals.make_die_instance(d, spec)`（网格 + 材质 + 逐面 Label3D），`die_view` 与 `dice_roll` 不要再各自遍历 faces 挂数字，避免漏挂或材质不一致。
-- 3D 骰的逐面数字不建议用 billboard（数字会脱离骰面）：每个面挂 `Label3D`，用「面法线 = 本地 +Z、投影 up = +Y」构造 Basis，`double_sided=false`；字高按该面内切圆半径算（约 1.35×inradius / font_size），只沿法线外移 0.0015，开深度测试。Godot 4.7.2 没有内置正四面体/正八面体/正十二面体 Mesh（`ClassDB` 只有 `BoxMesh` 等），d6/曜彩用 `BoxMesh`，其余用精确正多面体顶点生成 `ArrayMesh`；自定义网格按 Godot 顺时针正面绕序 `[0,i+1,i]`，否则 `CULL_BACK` 显示内壁。静态选骰视图用 `DieVisuals.display_rotation()`：结果面法线对准镜头，再绕屏幕水平轴 18° 上仰（d4/d8 三角面 28°，负号使正面翻起、露出底面/侧面），配合正交镜头 `size=2.0`；三角面由 `_triangle_top_yaw()` 转到顶点朝上，刻字由 `align_display_labels()` 反算。投骰演出仍用 `_rest_rotation()` 的物理停姿。正十二面体面法线用顶点凸包支撑面算法生成（2026-11-11；2026-11-26 重做贴面/不透明/角度）。
+- 3D 骰的逐面数字不建议用 billboard（数字会脱离骰面）：每个面挂 `Label3D`，用「面法线 = 本地 +Z、投影 up = +Y」构造 Basis，`double_sided=false`；字高按该面内切圆半径算（约 1.35×inradius / font_size），只沿法线外移 0.0015，开深度测试。Godot 4.7.2 没有内置正四面体/正八面体/正十二面体 Mesh（`ClassDB` 只有 `BoxMesh` 等），d6/曜彩用 `BoxMesh`，其余用精确正多面体顶点生成 `ArrayMesh`；自定义网格按 Godot 顺时针正面绕序 `[0,i+1,i]`，否则 `CULL_BACK` 显示内壁。静态选骰视图用 `DieVisuals.display_rotation()`：结果面法线对准镜头，再按骰型绕屏幕水平轴上仰（`_display_tilt_for()`：d4 -28°、d6 -14°、d8 -8°、d12 -18°，负号使正面翻起、露出底面/侧面），正交镜头基础 `size=2.0`、按 `display_bounds()` 自动放大；三角面由 `_triangle_top_yaw()` 转到顶点朝上，刻字由 `align_display_labels()` 反算。投骰演出仍用 `_rest_rotation()` 的物理停姿。正十二面体面法线用顶点凸包支撑面算法生成（2026-11-11；2026-11-26 重做贴面/不透明/角度；2026-11-27 第二轮按骰型拆倾角）。
 - KO 后边界：所有扣血/治疗/改点循环必须逐迭代或逐效果检查 `winner`；commit 瞬伤致死后 `settle()` 的跃升/骇入也不得再改点；`damage()`/`heal()` 对 HP≤0 目标直接返回；UI/driver 在攻方 commit 致死后跳过阵亡方防御阶段（2026-11-11）。
 - 「攻击后」类被动（`attack_after`）必须放在 `settle()` 内攻击结算之后（主伤害/连击/反击之后、中毒之前）：放在 `commit_selection()` 会先写入力量，被 settle 重算攻击值时吃进本次伤害（地球曾因此虚增；用户 2026-11-11 裁决改为结算后生效）。`settle()` 里先用最终 `atk_value` 更新 `_ctx_a.atk_value` 再 `eval_cond`/`apply_fx`。
 - 多来源连击已改计数（用户 2026-11-11 裁决）：`apply_fx` 写 `flags.combo_count`，`settle()` 逐段结算，`summary.combo_n` 为实际段数、`dmg2` 为各段合计；写测试/探针直接摆上下文时不要再用 `flags.combo = true`。多来源骇入仍是布尔 `hack_pending`（用户暂缓叠加），不要误改。
@@ -166,6 +172,8 @@ Shell 注意：上述命令在 cmd 与 Git Bash 下均可直接运行（命令�
 - 选骰界面 3D（2026-11-12）：每个 DieView 内是独立的 `SubViewport`，必须 `own_world_3d = true`、`transparent_bg = true`、`UPDATE_ONCE`；共用一个 World3D 会让各骰的相机/灯光/网格互相干扰（骰子错位或空白）。
 - 静态骰只渲染一次：`battle_ui.refresh()` 走 `_sync_dice_row` / `_sync_enemy_row` 按 Die 复用 `_die_views` / `_enemy_views`（创建/清理统一走 `_obtain_view()` / `_prune_views()`），**不要重建 SubViewport**；改骰面/选中描边后手动触发一次重渲染，别改成 `UPDATE_ALWAYS`（N 个 SubViewport 会持续烧 GPU）。
 - `SubViewport.size` 必须与渲染区一致（普通 128×108、敌方 96×96）：`SubViewportContainer.stretch = false` 时容器最小尺寸取子视口尺寸，视口 size 为 0 就会被布局压成空白。
+- 静态骰的正交 `size` 不是固定 2.0：`DieView._apply_rest()` 用 `DieVisuals.display_bounds()` 算旋转后骰体（含 1.10 选中壳）的投影包围盒，把 pivot 沿镜头 right/up 移到渲染区正中，并按 `size = max(2.0, max(bbox_h, bbox_w/aspect)/0.94)` 自动放大。d8 的上下尖会把 size 顶到约 2.5；d4/d8/d12 若不这么做，顶尖/边角会被 SubViewport 裁掉（2026-11-27 修）。改 `display_rotation`/`TIER_RADIUS`/镜头/壳层比例后，用临时探针读 SubViewport alpha 边界验证（`edge=false`），不要只看截图猜。
+- 无头模式的 `get_viewport_rect().size` 不一定是 1920×1080（本机 `-s` 实测为 1920×1920），不要用「视口中心」断言锚点控件的位置；按设计高度 540 或直接校验 offset。中心 `SelSum` 的 `ui_smoke` 断言即因此用 `540 + offset_bottom <= DiceTip.offset_top`。
 - 选中描边是放大不透明反壳：壳材质 `cull_mode = CULL_FRONT`（只渲染背面，轮廓外形成描边）、`TRANSPARENCY_DISABLED`，骰体本身 `CULL_BACK` + `TRANSPARENCY_DISABLED`；普通选中金色壳层 `SEL_SHELL_SCALE = 1.10`（2026-11-26 第五轮由 1.06 加粗）、命定粉色 `LOCK_SHELL_SCALE = 1.06`。旧实现因自定义网格绕序反了，只能 `CULL_BACK` + additive 发光，已废弃（2026-11-26）。
 - 骰下提示 `RichTextLabel` 的 `mouse_filter` 不能设 `IGNORE`（否则关键词 meta 点不到）；3D 骰本体的点击由 cell 上部无边框 Button 处理，两块区域不要重叠。
 - 敌方骰块在信息条框外、名字正下方：`EnemyDiceBlock` 是 root 直系子节点（x = 敌条左 + 20）→ `EnemyDiceHead`（来源标题 + 右侧 `总计 N`）+ `EnemyDice`（`GridContainer`，5 列、h 6/v 4，第 6 颗换行）。每颗用 `DieView.setup_enemy()`（cell 96×132 = 3D 96×96 + 36px/13px 提示），不可点击；与玩家骰共用 `DieVisuals.display_rotation()`/正交镜头/灯光/材质，只是尺寸缩小。信息条只按名字/被动/状态内容收紧，不再为骰块预留高度；块宽上限 884，避免压到居中横幅。`en.sel` 在 round_close 后可能含已移除的曜彩骰，展示/求总计前必须按 `en.dice` 过滤。
@@ -188,7 +196,7 @@ Shell 注意：上述命令在 cmd 与 Git Bash 下均可直接运行（命令�
 | 选骰区 3D 骰空白/不显示 | 每颗骰的 SubViewport 是否 `own_world_3d=true`、`transparent_bg=true`、`UPDATE_ONCE`，且 `SubViewport.size` 与渲染区一致（普通 128×108、敌方 96×96）；`stretch=false` 时容器最小尺寸取子视口尺寸，size 为 0 会被压成空白 |
 | 点击骰子无反应 | 点击目标是 cell 上部无边框 Button（3D 区域），不是骰下提示；确认无透明层/提示控件遮挡、Button `mouse_filter=STOP`，且池化后信号绑定在当前 DieView 上 |
 | 选中的骰子变成纯色块/描边盖住骰面 | 先确认自定义网格绕序为 Godot 顺时针正面 `[0,i+1,i]`；描边壳材质应为 `CULL_FRONT` + `TRANSPARENCY_DISABLED`（1.06 倍反壳），骰体为 `CULL_BACK` + `TRANSPARENCY_DISABLED`。若壳误用 `CULL_BACK` 会与骰体重合；若绕序反了，`CULL_BACK` 显示的是内壁 |
-| 敌方 96×132 缩小骰看不清 | 敌方行带 36px/13px 提示，但仍比玩家小；调整 `ENEMY_DIE_SIZE`/`ENEMY_SIZE` 与镜头距离，别照搬玩家 128×108 的尺寸。静态选骰为结果面正对镜头 + 18°/28° 上仰（正交镜头）；投骰演出仍用物理停姿，两者不要混用 |
+| 敌方 96×132 缩小骰看不清 | 敌方行带 36px/13px 提示，但仍比玩家小；调整 `ENEMY_DIE_SIZE`/`ENEMY_SIZE` 与镜头距离，别照搬玩家 128×108 的尺寸。静态选骰为结果面正对镜头 + 按骰型上仰（d4 -28°/d6 -14°/d8 -8°/d12 -18°，正交镜头）；投骰演出仍用物理停姿，两者不要混用 |
 | 替换 xlsx 报 `WinError 5` | 用户 Excel 正开着该表（`参考素材/` 下有 `~$角色，骰子参数.xlsx` 锁文件）→ 请用户先关 Excel |
 
 ## 7. 与外部工具的边界
